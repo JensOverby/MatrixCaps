@@ -4,8 +4,45 @@ import torch.nn.functional as F
 import numpy as np
 import math
 
+import scipy.stats as scs
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 from torch.autograd import Variable
 
+def graphics(V, mu, sigma_square, R):
+    #df = (pd.DataFrame(index=[1, 2]).assign(mus = new_mus).assign(sigs = new_sigs))
+
+    data = []
+    for i in range(len(V[0,:,0,0])):
+        data.append(V[0,i,0,0].item())
+
+    dataX = []
+    for i in range(len(R[0,:,0])):
+        dataX.append(R[0,i,0].item()*5)
+        
+    new_mus = mu[0,:,0,0].item()
+    new_sigs = sigma_square[0,:,0,0].item()
+
+    mind = np.min(data)
+    maxd = np.max(data)
+
+    xx = np.linspace(mind-(maxd-mind), maxd+(maxd-mind), 100)
+    yy = scs.multivariate_normal.pdf(xx, mean=new_mus, cov=new_sigs)
+
+    colors = sns.color_palette('Dark2', 3)
+    fig, ax = plt.subplots(figsize=(9, 7))
+    ax.set_ylim(-0.001, np.max(yy))
+    ax.plot(xx, yy, color=colors[1])
+    ax.axvline(new_mus, ymin=0., color=colors[1])
+    ax.fill_between(xx, 0, yy, alpha=0.5, color=colors[1])
+    lo, hi = ax.get_ylim()
+    ax.fill_between(xx, 0, yy, alpha=0.5, color=colors[2])
+
+    dot_kwds = dict(markerfacecolor='white', markeredgecolor='black', markeredgewidth=1, markersize=10)
+    ax.plot(data, dataX, 'o', **dot_kwds)
+    #ax.plot(data, len(data)*[0], 'o', **dot_kwds)
+    
 class PrimaryCaps(nn.Module):
     r"""Creates a primary convolutional capsule layer
     that outputs a pose matrix and an activation.
@@ -30,9 +67,9 @@ class PrimaryCaps(nn.Module):
     def __init__(self, A=32, B=32, K=1, P=4, stride=1):
         super(PrimaryCaps, self).__init__()
         self.pose = nn.Conv2d(in_channels=A, out_channels=B*P*P,
-                            kernel_size=K, stride=stride, bias=True)
+                            kernel_size=K, stride=stride)
         self.a = nn.Conv2d(in_channels=A, out_channels=B,
-                            kernel_size=K, stride=stride, bias=True)
+                            kernel_size=K, stride=stride)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
@@ -124,6 +161,10 @@ class ConvCaps(nn.Module):
 
         mu = torch.sum(coeff * v, dim=1, keepdim=True)
         sigma_sq = torch.sum(coeff * (v - mu)**2, dim=1, keepdim=True) + eps
+
+        kaj = False
+        if (kaj):
+            graphics(v, mu, sigma_sq, r)
 
         r_sum = r_sum.view(b, C, 1)
         sigma_sq = sigma_sq.view(b, C, psize)
@@ -327,31 +368,24 @@ class CapsNet(nn.Module):
         super(CapsNet, self).__init__()
         self.E = E
         self.P = P
-
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=A,
-                               kernel_size=5, stride=2, padding=2)
-        self.bn1 = nn.BatchNorm2d(num_features=A, eps=0.001,
-                                 momentum=0.1, affine=True)
-        self.relu1 = nn.ReLU(inplace=False)
-        self.primary_caps = PrimaryCaps(A, B, 1, P, stride=1)
+                               kernel_size=5, stride=2)
+        self.primary_caps = PrimaryCaps(A, B)
         self.conv_caps1 = ConvCaps(B, C, K, P, stride=2, iters=iters)
         self.conv_caps2 = ConvCaps(C, D, K, P, stride=1, iters=iters)
         self.class_caps = ConvCaps(D, E, 1, P, stride=1, iters=iters,
                                         coor_add=True, w_shared=True)
-        
         self.decoder = nn.Sequential(
-            nn.Linear(P*P * E, 512),
+            nn.Linear(16 * E, 512),
             nn.ReLU(inplace=True),
             nn.Linear(512, 1024),
             nn.ReLU(inplace=True),
             nn.Linear(1024, 784),
             nn.Sigmoid()
         )
-        
+
     def forward(self, x, y=None):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu1(x)
+        x = F.relu(self.conv1(x))
         x = self.primary_caps(x)
         x = self.conv_caps1(x) 
         x = self.conv_caps2(x) 

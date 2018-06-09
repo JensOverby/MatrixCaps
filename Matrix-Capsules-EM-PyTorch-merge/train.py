@@ -35,7 +35,7 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--em-iters', type=int, default=2, metavar='N',
+parser.add_argument('--em-iters', type=int, default=3, metavar='N',
                     help='iterations of EM Routing')
 parser.add_argument('--snapshot-folder', type=str, default='./snapshots', metavar='SF',
                     help='where to store the snapshots')
