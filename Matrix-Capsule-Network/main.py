@@ -19,7 +19,6 @@ from torchvision.utils import make_grid
 import numpy as np
 import random
 import os
-import math
 
 import matplotlib.pyplot as plt
 import argparse
@@ -33,6 +32,7 @@ torch.cuda.manual_seed(1991)
 random.seed(1991)
 np.random.seed(1991)
 
+import math
 import scipy.stats as scs
 import seaborn as sns
 
@@ -70,15 +70,19 @@ class PrimaryCaps(nn.Module):
         activations = F.sigmoid(torch.cat(activations, dim=1))  # b,32,12,12
         return poses, activations
 
-def graphics(V, mu, sigma_square):
+def graphics(V, mu, sigma_square, R):
     #df = (pd.DataFrame(index=[1, 2]).assign(mus = new_mus).assign(sigs = new_sigs))
 
     data = []
     for i in range(len(V[0,:,0,0])):
         data.append(V[0,i,0,0].item())
         
+    dataX = []
+    for i in range(len(R[0,:,0,0])):
+        dataX.append(R[0,i,0,0].item())
+        
     new_mus = mu[0,:,0,0].item()
-    new_sigs = sigma_square[0,0,0].item()
+    new_sigs = sigma_square[0,:,0,0].item()
 
     mind = np.min(data)
     maxd = np.max(data)
@@ -96,7 +100,8 @@ def graphics(V, mu, sigma_square):
     ax.fill_between(xx, 0, yy, alpha=0.5, color=colors[2])
 
     dot_kwds = dict(markerfacecolor='white', markeredgecolor='black', markeredgewidth=1, markersize=10)
-    ax.plot(data, len(data)*[0], 'o', **dot_kwds)
+    ax.plot(data, dataX, 'o', **dot_kwds)
+    #ax.plot(data, len(data)*[0], 'o', **dot_kwds)
     
 class ConvCaps(nn.Module):
     """
@@ -122,13 +127,12 @@ class ConvCaps(nn.Module):
         self.K = kernel  # kernel = 0 means full receptive field like class capsules
         self.Bkk = None
         self.Cww = None
-        self.bww = None
         self.b = args.batch_size
         self.stride = stride
         self.coordinate_add = coordinate_add
         self.transform_share = transform_share
-        self.beta_v = None
-        self.beta_a = None
+        self.beta_v = nn.Parameter(torch.randn(self.C)) #.cuda()
+        self.beta_a = nn.Parameter(torch.randn(self.C)) #.cuda()
         if not transform_share:
             self.W = nn.Parameter(torch.randn(B, kernel, kernel, C,
                                               4, 4))  # B,K,K,C,4,4
@@ -137,8 +141,7 @@ class ConvCaps(nn.Module):
 
         self.iteration = iteration
 
-        self.ln_2pi = torch.cuda.FloatTensor(1).fill_(math.log(2*math.pi))
-        self.eps = 0.000000001
+        self.eps = 1e-10
 
     def coordinate_addition(self, width_in, votes):
         add = [[i / width_in, j / width_in] for i in range(width_in) for j in range(width_in)]  # K,K,w,w
@@ -149,101 +152,6 @@ class ConvCaps(nn.Module):
 
     def down_w(self, w):
         return range(w * self.stride, w * self.stride + self.K)
-
-    def m_step(self, a_in, r, v, b, B, C, psize, lambda_):
-        """
-            \mu^h_j = \dfrac{\sum_i r_{ij} V^h_{ij}}{\sum_i r_{ij}}
-            (\sigma^h_j)^2 = \dfrac{\sum_i r_{ij} (V^h_{ij} - mu^h_j)^2}{\sum_i r_{ij}}
-            cost_h = (\beta_v + log \sigma^h_j) * \sum_i r_{ij}
-            a_j = logistic(\lambda * (\beta_a - \sum_h cost_h))
-            Input:
-                a_in:      (b, C, 1)
-                r:         (b, B, C, 1)
-                v:         (b, B, C, P*P)
-            Local:
-                cost_h:    (b, C, P*P)
-                r_sum:     (b, C, 1)
-            Output:
-                a_out:     (b, C, 1)
-                mu:        (b, 1, C, P*P)
-                sigma_sq:  (b, 1, C, P*P)
-        """
-        r = r * a_in
-        r = r / (r.sum(dim=2, keepdim=True) + self.eps)
-        r_sum = r.sum(dim=1, keepdim=True)
-        coeff = r / (r_sum + self.eps)
-        coeff = coeff.view(b, B, C, 1)
-
-        mu = torch.sum(coeff * v, dim=1, keepdim=True)
-        sigma_sq = torch.sum(coeff * (v - mu)**2, dim=1, keepdim=True) + self.eps
-
-        r_sum = r_sum.view(b, C, 1)
-        sigma_sq = sigma_sq.view(b, C, psize)
-        cost_h = (self.beta_v.view(C, 1) + torch.log(sigma_sq.sqrt())) * r_sum
-
-        a_out = F.sigmoid(lambda_*(self.beta_a - cost_h.sum(dim=2)))
-        sigma_sq = sigma_sq.view(b, 1, C, psize)
-
-        return a_out, mu, sigma_sq
-
-    def e_step(self, mu, sigma_sq, a_out, v, b, C):
-        """
-            ln_p_j = sum_h \dfrac{(\V^h_{ij} - \mu^h_j)^2}{2 \sigma^h_j}
-                    - sum_h ln(\sigma^h_j) - 0.5*\sum_h ln(2*\pi)
-            r = softmax(ln(a_j*p_j))
-              = softmax(ln(a_j) + ln(p_j))
-            Input:
-                mu:        (b, 1, C, P*P)
-                sigma:     (b, 1, C, P*P)
-                a_out:     (b, C, 1)
-                v:         (b, B, C, P*P)
-            Local:
-                ln_p_j_h:  (b, B, C, P*P)
-                ln_ap:     (b, B, C, 1)
-            Output:
-                r:         (b, B, C, 1)
-        """
-        ln_p_j_h = -1. * (v - mu)**2 / (2 * sigma_sq) \
-                    - torch.log(sigma_sq.sqrt()) \
-                    - 0.5*self.ln_2pi
-
-        ln_ap = ln_p_j_h.sum(dim=3) + torch.log(a_out.view(b, 1, C))
-        r = F.softmax(ln_ap)
-        return r
-
-    def EM_routing3(self, lambda_, a_in, v_in):
-        #v_in = v.permute(0, 2, 1, 3).contiguous()
-        #v_in = v_in.view(self.bww, self.Bkk, 16)[:,:,None,:]
-
-        #a_in = a.permute(0, 2, 1).contiguous()
-        #a_in = a_in.view(self.bww, self.Bkk)[..., None]
-        """
-            Input:
-                v:         (b, B, C, P*P)
-                a_in:      (b, C, 1)
-            Output:
-                mu:        (b, 1, C, P*P)
-                a_out:     (b, C, 1)
-            Note that some dimensions are merged
-            for computation convenient, that is
-            `b == batch_size*oh*ow`,
-            `B == self.K*self.K*self.B`,
-            `psize == self.P*self.P`
-        """
-        b, B, c, psize = v_in.shape
-        assert c == self.C
-        assert (b, B, self.C) == a_in.shape
-
-        r = torch.cuda.FloatTensor(b, B, self.C).fill_(1./self.C)
-        for iter_ in range(self.iteration):
-            a_out, mu, sigma_sq = self.m_step(a_in, r, v_in, b, B, self.C, psize, lambda_)
-            if iter_ < self.iteration - 1:
-                r = self.e_step(mu, sigma_sq, a_out, v_in, b, self.C)
-
-        #mu = mu.permute(1, 2, 0, 3).contiguous()
-        #a_out = a_out.permute(1, 0).contiguous()
-
-        return a_out, mu
 
     def EM_routing(self, lambda_, a_, V):
         # routing coefficient
@@ -256,23 +164,20 @@ class ConvCaps(nn.Module):
             mu = ((R * V).sum(1) / sum_R)[:, None, :, :]
             sigma_square = (R * (V - mu) ** 2).sum(1) / sum_R
 
-            kaj = False
-            if (kaj):
-                graphics(V, mu, sigma_square)
+            cost = (self.beta_v.view(1,self.C,1,1) + torch.log(sigma_square.sqrt().view(self.b,self.C,-1,16)+self.eps)) * sum_R.view(self.b, self.C,-1,1)
+            a = torch.sigmoid(lambda_ * (self.beta_a.view(1,self.C,1) - cost.sum(-1)))
+            a = a.view(self.b, self.Cww)
 
             # E-step
             if i != self.iteration - 1:
-                mu, sigma_square, V_, a__ = mu.data, sigma_square.data, V.data, a_.data
+                mu, sigma_square, V_, a__ = mu.data, sigma_square.data, V.data, a.data
                 normal = Normal(mu, sigma_square[:, None, :, :] ** (1 / 2))
-                p = torch.exp(normal.log_prob(V_))
-                ap = a__ * p.sum(-1)
-                R = Variable(ap / torch.sum(ap, -1)[..., None], requires_grad=False)
-            else:
-                const = (self.beta_v.expand_as(sigma_square) + torch.log(sigma_square)) * sum_R
-                a = torch.sigmoid(lambda_ * (self.beta_a.repeat(self.b, 1) - const.sum(2)))
+                p = torch.exp(normal.log_prob(V_+self.eps))
+                ap = a__[:,None,:] * p.sum(-1)
+                R = Variable(ap / torch.sum(ap, -1)[..., None], requires_grad=False) + self.eps
 
         return a, mu
-
+    
     def angle_routing(self, lambda_, a_, V):
         # routing coefficient
         R = Variable(torch.zeros([self.b, self.Bkk, self.Cww]), requires_grad=False).cuda()
@@ -303,14 +208,6 @@ class ConvCaps(nn.Module):
         self.Cww = w * w * self.C
         self.b = poses.size(0)
 
-        self.bww = self.b * w * w # temporary
-
-        if self.beta_v is None:
-            #self.beta_v = nn.Parameter(torch.randn(self.C)).cuda()
-            #self.beta_a = nn.Parameter(torch.randn(self.C)).cuda()
-            self.beta_v = nn.Parameter(torch.randn(1, self.Cww, 1)).cuda()
-            self.beta_a = nn.Parameter(torch.randn(1, self.Cww)).cuda()
-
         if self.transform_share:
             if self.K == 0:
                 self.K = width_in  # class Capsules' kernel = width_in
@@ -332,26 +229,16 @@ class ConvCaps(nn.Module):
 
         if self.coordinate_add:
             votes = self.coordinate_addition(width_in, votes)
-            #activation = activations[...,None].repeat(1,1,1,1,self.Cww) \
-            #.view(self.b, self.B, self.K, self.K, self.C, -1).permute(0,5,1,2,3,4).contiguous() \
-            #.view(self.bww, self.Bkk, self.C)
             activation = activations.view(self.b, -1)[..., None].repeat(1, 1, self.Cww)
         else:
             activations_ = [activations[:, :, self.down_w(x), :][:, :, :, self.down_w(y)]
                             for x in range(w) for y in range(w)]
-            #activation = torch.stack(activations_, dim=1)[...,None].repeat(1,1,1,1,1,self.C).view(self.bww, self.Bkk, self.C)
             activation = torch.stack(
                 activations_, dim=4).view(self.b, self.Bkk, 1, -1) \
                 .repeat(1, 1, self.C, 1).view(self.b, self.Bkk, self.Cww)
 
-        #votes = votes.permute(0,5,6,1,2,3,4,7,8).contiguous().view(self.bww, self.Bkk, self.C,16)
         votes = votes.view(self.b, self.Bkk, self.Cww, 16)
-        
         activations, poses = getattr(self, args.routing)(lambda_, activation, votes)
-        
-        #poses = poses.view(self.b, -1, 1, self.C, 4*4).permute(0,2,3,1,4).contiguous().view(self.b,1,self.Cww,4*4)
-        #activations = activations.view(self.b, -1, 1, self.C).permute(0,2,3,1).contiguous().view(self.b,1,self.Cww)       
-        
         return poses.view(self.b, self.C, w, w, -1), activations.view(self.b, self.C, w, w)
 
 
@@ -428,7 +315,7 @@ class CapsuleLoss(nn.Module):
 
         if args.use_recon:
             recon_loss = self.reconstruction_loss(recon, images)
-            main_loss += 0.0005 * recon_loss
+            main_loss += args.recon_factor * recon_loss
 
         return main_loss
 
@@ -442,18 +329,19 @@ def reset_meters():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
 
-    parser.add_argument('-batch_size', type=int, default=64)
-    parser.add_argument('-num_epochs', type=int, default=500)
-    parser.add_argument('-lr', type=float, default=2e-2)
-    parser.add_argument('-clip', type=float, default=5)
-    parser.add_argument('-r', type=int, default=3)
-    parser.add_argument('-disable_cuda', action='store_true',
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--test-batch_size', type=int, default=5)
+    parser.add_argument('--num_epochs', type=int, default=500)
+    parser.add_argument('--lr', type=float, default=2e-2)
+    parser.add_argument('--clip', type=float, default=5)
+    parser.add_argument('--r', type=int, default=3)
+    parser.add_argument('--disable_cuda', action='store_true',
                         help='Disable CUDA')
-    parser.add_argument('-print_freq', type=int, default=10)
-    parser.add_argument('-pretrained', type=str, default="")
+    parser.add_argument('--print_freq', type=int, default=10)
+    parser.add_argument('--pretrained', type=str, default="")
     parser.add_argument('--num-classes', type=int, default=10, metavar='N',
                         help='number of output classes (default: 10)')
-    parser.add_argument('-gpu', type=int, default=0, help="which gpu to use")
+    parser.add_argument('--gpu', type=int, default=0, help="which gpu to use")
     parser.add_argument('--env-name', type=str, default='main',
                         metavar='N', help='Environment name for displaying plot')
     parser.add_argument('--loss', type=str, default='margin_loss', metavar='N',
@@ -464,6 +352,7 @@ if __name__ == '__main__':
                         help='use reconstruction loss or not')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N',
                         help='num of workers to fetch data')
+    parser.add_argument('--recon-factor', type=float, default=0.0005)
     args = parser.parse_args()
     args.use_cuda = not args.disable_cuda and torch.cuda.is_available()
 
@@ -471,8 +360,8 @@ if __name__ == '__main__':
     lambda_ = 1e-3  # TODO:find a good schedule to increase lambda and m
     m = 0.2
 
-    A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
-    # A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
+    #A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
+    A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
 
     model = CapsNet(A, B, C, D, E, r)
     capsule_loss = CapsuleLoss()
@@ -519,7 +408,7 @@ if __name__ == '__main__':
                                                shuffle=True)
 
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                              batch_size=args.batch_size,
+                                              batch_size=args.test_batch_size,
                                               num_workers=args.num_workers,
                                               shuffle=True)
 
@@ -555,6 +444,7 @@ if __name__ == '__main__':
                     optimizer.zero_grad()
 
                     imgs, labels = data  # b,1,28,28; #b
+                    #imgs = imgs[0,0,0:1,0:1].view(1,1,1,1)
                     imgs, labels = Variable(imgs), Variable(labels)
                     if use_cuda:
                         imgs = imgs.cuda()
@@ -572,6 +462,8 @@ if __name__ == '__main__':
                     meter_loss.add(loss.data[0])
                     pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
                     pbar.update()
+                    
+                    torch.cuda.empty_cache()
 
                 loss = meter_loss.value()[0]
                 acc = meter_accuracy.value()[0]
@@ -584,6 +476,8 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), "./weights/em_capsules/model_{}.pth".format(epoch))
 
                 reset_meters()
+                
+                
                 # Test
                 print('Testing...')
                 correct = 0
@@ -601,15 +495,17 @@ if __name__ == '__main__':
                     # visualize reconstruction for final batch
                     if i == 0:
                         ground_truth_logger.log(
-                            make_grid(imgs.data, nrow=int(args.batch_size ** 0.5), normalize=True,
+                            make_grid(imgs.data, nrow=int(args.test_batch_size ** 0.5), normalize=True,
                                       range=(0, 1)).cpu().numpy())
                         reconstruction_logger.log(
-                            make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True,
+                            make_grid(recon.data, nrow=int(args.test_batch_size ** 0.5), normalize=True,
                                       range=(0, 1)).cpu().numpy())
 
                     meter_accuracy.add(out_labels.data, labels.data)
                     confusion_meter.add(out_labels.data, labels.data)
                     meter_loss.add(loss.data[0])
+
+                    torch.cuda.empty_cache()
 
                 loss = meter_loss.value()[0]
                 acc = meter_accuracy.value()[0]
@@ -617,5 +513,7 @@ if __name__ == '__main__':
                 test_loss_logger.log(epoch, loss)
                 test_accuracy_logger.log(epoch, acc)
                 confusion_logger.log(confusion_meter.value())
+                
+                
 
                 print("Epoch{} Test acc:{:4}, loss:{:4}".format(epoch, acc, loss))
