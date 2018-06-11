@@ -32,9 +32,6 @@ torch.cuda.manual_seed(1991)
 random.seed(1991)
 np.random.seed(1991)
 
-import math
-import scipy.stats as scs
-import seaborn as sns
 
 def print_mat(x):
     for i in range(x.size(1)):
@@ -70,39 +67,7 @@ class PrimaryCaps(nn.Module):
         activations = F.sigmoid(torch.cat(activations, dim=1))  # b,32,12,12
         return poses, activations
 
-def graphics(V, mu, sigma_square, R):
-    #df = (pd.DataFrame(index=[1, 2]).assign(mus = new_mus).assign(sigs = new_sigs))
 
-    data = []
-    for i in range(len(V[0,:,0,0])):
-        data.append(V[0,i,0,0].item())
-        
-    dataX = []
-    for i in range(len(R[0,:,0,0])):
-        dataX.append(R[0,i,0,0].item())
-        
-    new_mus = mu[0,:,0,0].item()
-    new_sigs = sigma_square[0,:,0,0].item()
-
-    mind = np.min(data)
-    maxd = np.max(data)
-
-    xx = np.linspace(mind-(maxd-mind), maxd+(maxd-mind), 100)
-    yy = scs.multivariate_normal.pdf(xx, mean=new_mus, cov=new_sigs)
-
-    colors = sns.color_palette('Dark2', 3)
-    fig, ax = plt.subplots(figsize=(9, 7))
-    ax.set_ylim(-0.001, np.max(yy))
-    ax.plot(xx, yy, color=colors[1])
-    ax.axvline(new_mus, ymin=0., color=colors[1])
-    ax.fill_between(xx, 0, yy, alpha=0.5, color=colors[1])
-    lo, hi = ax.get_ylim()
-    ax.fill_between(xx, 0, yy, alpha=0.5, color=colors[2])
-
-    dot_kwds = dict(markerfacecolor='white', markeredgecolor='black', markeredgewidth=1, markersize=10)
-    ax.plot(data, dataX, 'o', **dot_kwds)
-    #ax.plot(data, len(data)*[0], 'o', **dot_kwds)
-    
 class ConvCaps(nn.Module):
     """
     Convolutional Capsule Layer.
@@ -131,8 +96,8 @@ class ConvCaps(nn.Module):
         self.stride = stride
         self.coordinate_add = coordinate_add
         self.transform_share = transform_share
-        self.beta_v = nn.Parameter(torch.randn(self.C)) #.cuda()
-        self.beta_a = nn.Parameter(torch.randn(self.C)) #.cuda()
+        self.beta_v = nn.Parameter(torch.randn(self.C))
+        self.beta_a = nn.Parameter(torch.randn(self.C))
         if not transform_share:
             self.W = nn.Parameter(torch.randn(B, kernel, kernel, C,
                                               4, 4))  # B,K,K,C,4,4
@@ -177,7 +142,7 @@ class ConvCaps(nn.Module):
                 R = Variable(ap / torch.sum(ap, -1)[..., None], requires_grad=False) + self.eps
 
         return a, mu
-    
+
     def angle_routing(self, lambda_, a_, V):
         # routing coefficient
         R = Variable(torch.zeros([self.b, self.Bkk, self.Cww]), requires_grad=False).cuda()
@@ -329,8 +294,8 @@ def reset_meters():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
 
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--test-batch_size', type=int, default=5)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--test-batch_size', type=int, default=32)
     parser.add_argument('--num_epochs', type=int, default=500)
     parser.add_argument('--lr', type=float, default=2e-2)
     parser.add_argument('--clip', type=float, default=5)
@@ -344,9 +309,9 @@ if __name__ == '__main__':
     parser.add_argument('--gpu', type=int, default=0, help="which gpu to use")
     parser.add_argument('--env-name', type=str, default='main',
                         metavar='N', help='Environment name for displaying plot')
-    parser.add_argument('--loss', type=str, default='margin_loss', metavar='N',
+    parser.add_argument('--loss', type=str, default='spread_loss', metavar='N',
                         help='loss to use: cross_entropy_loss, margin_loss, spread_loss')
-    parser.add_argument('--routing', type=str, default='angle_routing', metavar='N',
+    parser.add_argument('--routing', type=str, default='EM_routing', metavar='N',
                         help='routing to use: angle_routing, EM_routing')
     parser.add_argument('--use-recon', type=bool, default=True, metavar='N',
                         help='use reconstruction loss or not')
@@ -360,8 +325,8 @@ if __name__ == '__main__':
     lambda_ = 1e-3  # TODO:find a good schedule to increase lambda and m
     m = 0.2
 
-    #A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
-    A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
+    A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
+    #A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
 
     model = CapsNet(A, B, C, D, E, r)
     capsule_loss = CapsuleLoss()
@@ -444,7 +409,6 @@ if __name__ == '__main__':
                     optimizer.zero_grad()
 
                     imgs, labels = data  # b,1,28,28; #b
-                    #imgs = imgs[0,0,0:1,0:1].view(1,1,1,1)
                     imgs, labels = Variable(imgs), Variable(labels)
                     if use_cuda:
                         imgs = imgs.cuda()
@@ -462,8 +426,6 @@ if __name__ == '__main__':
                     meter_loss.add(loss.data[0])
                     pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
                     pbar.update()
-                    
-                    torch.cuda.empty_cache()
 
                 loss = meter_loss.value()[0]
                 acc = meter_accuracy.value()[0]
@@ -476,8 +438,6 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), "./weights/em_capsules/model_{}.pth".format(epoch))
 
                 reset_meters()
-                
-                
                 # Test
                 print('Testing...')
                 correct = 0
@@ -505,15 +465,12 @@ if __name__ == '__main__':
                     confusion_meter.add(out_labels.data, labels.data)
                     meter_loss.add(loss.data[0])
 
-                    torch.cuda.empty_cache()
-
                 loss = meter_loss.value()[0]
                 acc = meter_accuracy.value()[0]
 
                 test_loss_logger.log(epoch, loss)
                 test_accuracy_logger.log(epoch, acc)
                 confusion_logger.log(confusion_meter.value())
-                
-                
 
                 print("Epoch{} Test acc:{:4}, loss:{:4}".format(epoch, acc, loss))
+
