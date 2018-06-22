@@ -31,11 +31,23 @@ np.random.seed(1991)
 
 
 def reset_meters():
-    meter_accuracy.reset()
+    #meter_accuracy.reset()
     meter_loss.reset()
-    confusion_meter.reset()
+    #confusion_meter.reset()
 
+class MyImageFolder(datasets.ImageFolder):
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        data = path.split('/')
+        data = data[-1].split('_')
+        data = [float(i) for i in data[:-1]]
+        target = np.asarray(data)
+        return sample, target
 
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
 
@@ -49,7 +61,7 @@ if __name__ == '__main__':
                         help='Disable CUDA')
     parser.add_argument('--print_freq', type=int, default=10)
     parser.add_argument('--pretrained', type=str, default="")
-    parser.add_argument('--num-classes', type=int, default=10, metavar='N',
+    parser.add_argument('--num-classes', type=int, default=1, metavar='N',
                         help='number of output classes (default: 10)')
     parser.add_argument('--gpu', type=int, default=0, help="which gpu to use")
     parser.add_argument('--env-name', type=str, default='main',
@@ -69,15 +81,16 @@ if __name__ == '__main__':
     lambda_ = 1e-3  # TODO:find a good schedule to increase lambda and m
     m = 0.2
 
+    #A, B, C, D, E, r = 32, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
     A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
     #A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
 
-    model = mcaps.CapsNet(args, A, B, C, D, E, r, 2)
+    model = mcaps.CapsNet(args, A, B, C, D, E, r)
     capsule_loss = mcaps.CapsuleLoss(args)
 
     meter_loss = tnt.meter.AverageValueMeter()
-    meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
-    confusion_meter = tnt.meter.ConfusionMeter(args.num_classes, normalized=True)
+    #meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
+    #confusion_meter = tnt.meter.ConfusionMeter(args.num_classes, normalized=True)
 
     setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env=args.env_name)
     train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env=args.env_name)
@@ -99,27 +112,27 @@ if __name__ == '__main__':
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=1)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1)
 
-    train_dataset = datasets.MNIST(root='./data/',
-                                   train=True,
-                                   transform=transforms.ToTensor(),
-                                   download=True)
-
-    test_dataset = datasets.MNIST(root='./data/',
-                                  train=False,
-                                  transform=transforms.ToTensor())
+    train_dataset = MyImageFolder(root='./data/dumps/', transform=transforms.ToTensor(),
+                                  target_transform=transforms.ToTensor())
 
     # Data Loader (Input Pipeline)
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=args.batch_size,
                                                num_workers=args.num_workers,
                                                shuffle=True)
+    """
+    test_dataset = datasets.MNIST(root='./data/',
+                                  train=False,
+                                  transform=transforms.ToTensor())
+
 
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                                               batch_size=args.test_batch_size,
                                               num_workers=args.num_workers,
                                               shuffle=True)
+    """
 
     steps, lambda_, m = len(train_dataset) // args.batch_size, 1e-3, 0.2
 
@@ -143,45 +156,63 @@ if __name__ == '__main__':
             loss = 0
 
             with tqdm(total=steps) as pbar:
-                for data in train_loader:
-                    step += 1
-                    if lambda_ < 1:
-                        lambda_ += 2e-1 / steps
-                    if m < 0.9:
-                        m += 2e-1 / steps
+                for counter in range(10):
+                    for data in train_loader:
+                        step += 1
+                        if lambda_ < 1:
+                            lambda_ += 2e-1 / steps
+                        if m < 0.9:
+                            m += 2e-1 / steps
+    
+                        optimizer.zero_grad()
+    
+                        imgs, labels = data  # b,1,28,28; #b
+                        imgs = imgs[:,0,:,:].unsqueeze(1) # use only red channel
+                        imgs, labels = Variable(imgs), Variable(labels)
+                        if use_cuda:
+                            imgs = imgs.cuda()
+                            labels = labels.cuda()
+    
+                        out_labels, recon = model(imgs, lambda_)#, labels)
+    
+                        recon = recon.view_as(imgs)
+                        loss = capsule_loss(imgs, out_labels, labels, m, recon)
+    
+                        loss.backward()
+                        optimizer.step()
+    
+                        #meter_accuracy.add(out_labels.data, labels.data)
+                        meter_loss.add(loss.data[0])
+                        pbar.set_postfix(loss=meter_loss.value()[0], lambda_=lambda_)
+                        pbar.update()
 
-                    optimizer.zero_grad()
+                ground_truth_logger.log(
+                    make_grid(imgs.data, nrow=int(args.batch_size ** 0.5), normalize=True,
+                              range=(0, 1)).cpu().numpy())
+                reconstruction_logger.log(
+                    make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True,
+                              range=(0, 1)).cpu().numpy())
 
-                    imgs, labels = data  # b,1,28,28; #b
-                    imgs, labels = Variable(imgs), Variable(labels)
-                    if use_cuda:
-                        imgs = imgs.cuda()
-                        labels = labels.cuda()
 
-                    out_labels, recon = model(imgs, lambda_, labels)
-
-                    recon = recon.view_as(imgs)
-                    loss = capsule_loss(imgs, out_labels, labels, m, recon)
-
-                    loss.backward()
-                    optimizer.step()
-
-                    meter_accuracy.add(out_labels.data, labels.data)
-                    meter_loss.add(loss.data[0])
-                    pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
-                    pbar.update()
 
                 loss = meter_loss.value()[0]
-                acc = meter_accuracy.value()[0]
+                #acc = meter_accuracy.value()[0]
 
                 train_loss_logger.log(epoch, loss)
-                train_error_logger.log(epoch, acc)
+                #train_error_logger.log(epoch, acc)
 
-                print("Epoch{} Train acc:{:4}, loss:{:4}".format(epoch, acc, loss))
-                scheduler.step(acc)
+                
+                with open("loss.log", "a") as myfile:
+                    myfile.write(str(loss.data.item())+'\n')
+
+                print("Epoch{} Train loss:{:4}".format(epoch, loss))
+                scheduler.step(loss)
                 torch.save(model.state_dict(), "./weights/em_capsules/model_{}.pth".format(epoch))
 
                 reset_meters()
+
+                
+                """
                 # Test
                 print('Testing...')
                 correct = 0
@@ -217,4 +248,5 @@ if __name__ == '__main__':
                 confusion_logger.log(confusion_meter.value())
 
                 print("Epoch{} Test acc:{:4}, loss:{:4}".format(epoch, acc, loss))
-
+                """
+                

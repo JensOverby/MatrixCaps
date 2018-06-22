@@ -268,6 +268,10 @@ class CapsNet(nn.Module):
         p, a = self.classcaps(x, lambda_)  # b,10*16+10
 
         p = p.squeeze()
+        
+        # Temporary when batch size = 1
+        if len(p.shape) == 1:
+            p = p.unsqueeze(0)
 
         if y is None:
             _, y = a.max(dim=1)
@@ -276,7 +280,7 @@ class CapsNet(nn.Module):
         # convert to one hot
         y = Variable(torch.eye(self.num_classes)).cuda().index_select(dim=0, index=y)
 
-        reconstructions = self.decoder((p * y[:, :, None]).view(p.size(0), -1))
+        reconstructions = self.decoder(p)
 
         return a.squeeze(), reconstructions
 
@@ -310,10 +314,10 @@ class CapsuleLoss(nn.Module):
         return margin_loss * 1/x.size(0)
 
     def forward(self, images, output, labels, m, recon):
-        main_loss = getattr(self, self.loss)(output, labels, m)
+        #main_loss = getattr(self, self.loss)(output, labels, m)
 
-        if self.use_recon:
-            recon_loss = self.reconstruction_loss(recon, images)
-            main_loss += self.use_recon * recon_loss
+        #if self.use_recon:
+        recon_loss = self.reconstruction_loss(recon, images)
+        main_loss = self.use_recon * recon_loss
 
         return main_loss

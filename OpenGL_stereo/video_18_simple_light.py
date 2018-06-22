@@ -67,17 +67,17 @@ class ObjLoader:
 
         self.model = np.array(self.model, dtype='float32')
 
-def render_to_jpg(format="PNG"):
-    filename = "dump_1.png"
+def render_to_jpg(filename, format="PNG"):
+    #filename = "dump_1.png"
     os.chdir(r"./dumps")
     while True:
         file = ''
         for file in os.listdir(os.curdir):
             if file == filename:
                 name, ext = file.split(".")
-                word, number = name.split("_")
+                word, number = name.split("%")
                 new_num = int(number) + 1
-                filename = word + "_" + str(new_num) + "." + ext
+                filename = word + "%" + str(new_num) + "." + ext
                 file = filename
                 break
             else:
@@ -91,7 +91,7 @@ def render_to_jpg(format="PNG"):
     data = glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE)
     image = Image.frombytes("RGB", (width, height), data)
     image = image.transpose(Image.FLIP_TOP_BOTTOM)
-    image = image.resize((100,100), Image.ANTIALIAS)
+    image = image.resize((28,28), Image.ANTIALIAS)
     image.save(filename, format)
     os.chdir(r"..")
 
@@ -99,7 +99,8 @@ rot_a = 0.0
 rot_b = 0.0
 rotating = False
 pos_x = 0.0
-pos_y = 0.0
+origo_y = -0.4
+pos_y = origo_y
 translating = False
 mouse_pos_x = 0
 mouse_pos_y = 0
@@ -109,7 +110,7 @@ eye_distance = 0.2
 def key_callback(window, key, scancode, action, mode):
     if key == glfw.KEY_F12 and action == glfw.PRESS:
         global make_samples_count
-        make_samples_count = 100
+        make_samples_count = 1000
         #render_to_jpg()
     if key == glfw.KEY_ESCAPE:
         global rot_a
@@ -119,7 +120,7 @@ def key_callback(window, key, scancode, action, mode):
         rot_a = 0.0
         rot_b = 0.0
         pos_x = 0.0
-        pos_y = 0.0
+        pos_y = origo_y
 
 def cursor_pos_callback(window, x, y):
     global mouse_pos_x
@@ -248,7 +249,7 @@ def main():
     proj_loc = glGetUniformLocation(shader, "projection")
     model_loc = glGetUniformLocation(shader, "model")
     transform_loc = glGetUniformLocation(shader, "transform")
-    light_loc = glGetUniformLocation(shader, "light")
+    #light_loc = glGetUniformLocation(shader, "light")
 
     glUniformMatrix4fv(view_loc, 1, GL_FALSE, view)
     glUniformMatrix4fv(proj_loc, 1, GL_FALSE, projection)
@@ -267,22 +268,28 @@ def main():
             trans[3,1] = pos_y #+ random.random()*0.2 - 0.1
             eye_angle = eye_distance/focus_distance
 
+            q = pyrr.Quaternion.from_matrix(rot)
+            stereo_filename = '0.0_0.0_0.0_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
+
             right_eye_transform = pyrr.Matrix44.from_y_rotation(eye_angle/2)
             left_eye_transform = pyrr.Matrix44.from_y_rotation(-eye_angle/2)
             
             glUniformMatrix4fv(transform_loc, 1, GL_FALSE, right_eye_transform*rot*trans)
-            glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
+            #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
-            
-            time.sleep(1)
+            render_to_jpg(stereo_filename+'_r.png')
+
+            time.sleep(0.1)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             glUniformMatrix4fv(transform_loc, 1, GL_FALSE, left_eye_transform*rot*trans)
-            glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
+            #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
-            time.sleep(1)
+            render_to_jpg(stereo_filename+'_l.png')
+
+            time.sleep(0.1)
             
             make_samples_count -= 1
            
@@ -294,7 +301,7 @@ def main():
             trans[3,1] = pos_y
     
             glUniformMatrix4fv(transform_loc, 1, GL_FALSE, rot*trans)
-            glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
+            #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
 
