@@ -26,6 +26,10 @@ def print_mat(x):
 
     plt.show()
 
+def isnan(x):
+    kaj = (x != x).sum()
+    return (kaj != 0)
+
 
 class PrimaryCaps(nn.Module):
     """
@@ -168,9 +172,9 @@ class ConvCaps(nn.Module):
             # E-step
             if i != self.iteration - 1:
                 normal = Normal(mu, sigma_square.sqrt())
-                p = torch.exp(normal.log_prob(V+self.eps))
+                p = torch.exp(normal.log_prob(V+self.eps))   # https://stackoverflow.com/questions/40472499/issue-nan-with-adam-solver
                 ap = a[:,None,:] * p.sum(-1)
-                R = Variable(ap / torch.sum(ap, -1, keepdim=True), requires_grad=False) + self.eps
+                R = Variable(ap / (torch.sum(ap, -1, keepdim=True) + self.eps), requires_grad=False)
 
         return a, mu
 
@@ -235,33 +239,63 @@ class ConvCaps(nn.Module):
 
         votes = votes.view(self.b, self.Bkk, self.Cww, self.hh)
         activations, poses = getattr(self, self.routing)(lambda_, activation, votes)
+        
+        if isnan(activations) or isnan(poses):
+            print("nan")
+        
         return poses.view(self.b, self.C, w, w, -1), activations.view(self.b, self.C, w, w)
 
 
 class CapsNet(nn.Module):
-    def __init__(self, args, A=32, B=32, C=32, D=32, E=10, r=3, h=4):
+    def __init__(self, args, A=32, AA=32, B=32, C=32, D=32, E=10, r=3, h=4):
         super(CapsNet, self).__init__()
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=A,
                                kernel_size=5, stride=2)
-        self.primary_caps = PrimaryCaps(A, B, h=h)
+        self.conv2 = nn.Conv2d(in_channels=A, out_channels=AA,
+                               kernel_size=5, stride=2, padding=1)
+        self.primary_caps = PrimaryCaps(AA, B, h=h)
         self.convcaps1 = ConvCaps(args, B, C, kernel=3, stride=2, h=h, iteration=r,
                                   coordinate_add=False, transform_share=False)
         self.convcaps2 = ConvCaps(args, C, D, kernel=3, stride=1, h=h, iteration=r,
                                   coordinate_add=False, transform_share=False)
         self.classcaps = ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r,
                                   coordinate_add=True, transform_share=True)
+
+        lin1 = nn.Linear(h*h * args.num_classes, 1024)
+        lin1.weight.data *= 50.0
+        lin2 = nn.Linear(1024, 10240)
+        lin2.weight.data *= 1.0
+        lin3 = nn.Linear(10240, 10000)
+        lin3.weight.data *= 1.0
+
+        
         self.decoder = nn.Sequential(
-            nn.Linear(h*h * args.num_classes, 512),
+            #nn.Linear(h*h * args.num_classes, 1024),   # 16 - 1024 - 10240 - 10000
+            lin1,
             nn.ReLU(inplace=True),
-            nn.Linear(512, 1024),
+            #nn.Linear(1024, 10240),
+            lin2,
             nn.ReLU(inplace=True),
-            nn.Linear(1024, 784),
+            #nn.Linear(10240, 10000),
+            lin3,
             nn.Sigmoid()
         )
-        self.num_classes = E
 
+        """
+        elem_counter = 0
+        for elems in self.decoder.children():
+            if (elem_counter % 2) == 0:
+                elems.weight *= 5.0
+            elem_counter += 1
+        """
+
+        
+        self.num_classes = E
+        
     def forward(self, x, lambda_, y=None):  # b,1,28,28
         x = F.relu(self.conv1(x))  # b,32,12,12
+        x = F.max_pool2d(x,2, 2, 1)
+        x = F.relu(self.conv2(x))  # b,32,12,12
         x = self.primary_caps(x)  # b,32*(4*4+1),12,12
         x = self.convcaps1(x, lambda_)  # b,32*(4*4+1),5,5
         x = self.convcaps2(x, lambda_)  # b,32*(4*4+1),3,3
@@ -273,12 +307,12 @@ class CapsNet(nn.Module):
         if len(p.shape) == 1:
             p = p.unsqueeze(0)
 
-        if y is None:
-            _, y = a.max(dim=1)
-            y = y.squeeze()
+        #if y is None:
+        #    _, y = a.max(dim=1)
+        #    y = y.squeeze()
 
         # convert to one hot
-        y = Variable(torch.eye(self.num_classes)).cuda().index_select(dim=0, index=y)
+        #y = Variable(torch.eye(self.num_classes)).cuda().index_select(dim=0, index=y)
 
         reconstructions = self.decoder(p)
 

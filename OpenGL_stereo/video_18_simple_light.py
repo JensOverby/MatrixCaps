@@ -91,7 +91,7 @@ def render_to_jpg(filename, format="PNG"):
     data = glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE)
     image = Image.frombytes("RGB", (width, height), data)
     image = image.transpose(Image.FLIP_TOP_BOTTOM)
-    image = image.resize((28,28), Image.ANTIALIAS)
+    image = image.resize((100,100), Image.ANTIALIAS)
     image.save(filename, format)
     os.chdir(r"..")
 

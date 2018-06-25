@@ -28,12 +28,18 @@ torch.cuda.manual_seed(1991)
 random.seed(1991)
 np.random.seed(1991)
 
-
+debugcounter = 0
 
 def reset_meters():
     #meter_accuracy.reset()
     meter_loss.reset()
     #confusion_meter.reset()
+
+def gaussian(ins, is_training, mean, stddev):
+    if is_training:
+        noise = Variable(ins.data.new(ins.size()).normal_(mean, stddev))
+        return ins + noise
+    return ins
 
 class MyImageFolder(datasets.ImageFolder):
     def __getitem__(self, index):
@@ -51,10 +57,10 @@ class MyImageFolder(datasets.ImageFolder):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
 
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--test-batch_size', type=int, default=32)
     parser.add_argument('--num_epochs', type=int, default=500)
-    parser.add_argument('--lr', type=float, default=2e-2)
+    parser.add_argument('--lr', type=float, default=2e-3)
     parser.add_argument('--clip', type=float, default=5)
     parser.add_argument('--r', type=int, default=3)
     parser.add_argument('--disable_cuda', action='store_true',
@@ -81,11 +87,11 @@ if __name__ == '__main__':
     lambda_ = 1e-3  # TODO:find a good schedule to increase lambda and m
     m = 0.2
 
-    #A, B, C, D, E, r = 32, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
-    A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
+    #A, B, C, D, E, r = 64, 8, 16, 16, args.num_classes, args.r  # a small CapsNet
+    A, AA, B, C, D, E, r = 32, 64, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
     #A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
 
-    model = mcaps.CapsNet(args, A, B, C, D, E, r)
+    model = mcaps.CapsNet(args, A, AA, B, C, D, E, r)
     capsule_loss = mcaps.CapsuleLoss(args)
 
     meter_loss = tnt.meter.AverageValueMeter()
@@ -111,8 +117,8 @@ if __name__ == '__main__':
 
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True, eps=1e-3) #, eps=1e-3
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1, verbose=True)
 
     train_dataset = MyImageFolder(root='./data/dumps/', transform=transforms.ToTensor(),
                                   target_transform=transforms.ToTensor())
@@ -168,23 +174,75 @@ if __name__ == '__main__':
     
                         imgs, labels = data  # b,1,28,28; #b
                         imgs = imgs[:,0,:,:].unsqueeze(1) # use only red channel
+                        imgs = gaussian(imgs, True, 0.0, 0.1)
+                        
                         imgs, labels = Variable(imgs), Variable(labels)
                         if use_cuda:
                             imgs = imgs.cuda()
                             labels = labels.cuda()
-    
+
+                        # DEBUG STUFF
+                        print(debugcounter)
+                        if debugcounter == 48:
+                            debcounter = 48
+                        debugcounter += 1
+
                         out_labels, recon = model(imgs, lambda_)#, labels)
     
                         recon = recon.view_as(imgs)
                         loss = capsule_loss(imgs, out_labels, labels, m, recon)
     
                         loss.backward()
-                        optimizer.step()
+                        
+                        for q in range(len(model.primary_caps.capsules_activation)):
+                            if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
+                                print("isnan")
+                            if mcaps.isnan(model.primary_caps.capsules_pose[q].weight):
+                                print("isnan")
+                        if mcaps.isnan(model.conv1.weight):
+                            print("isnan")
+                        if mcaps.isnan(model.conv2.weight):
+                            print("isnan")
+                        if mcaps.isnan(model.convcaps1.W):
+                            print("isnan")
+                        if mcaps.isnan(model.convcaps2.W):
+                            print("isnan")
+
+                        nan = False
+                        if mcaps.isnan(model.convcaps1.W.grad) or mcaps.isnan(model.convcaps1.beta_v.grad) or mcaps.isnan(model.convcaps1.beta_a.grad):
+                            nan = True
+                            #scheduler._reduce_lr(epoch)
+                            print("nan nan nan nan nan nan nan!!!!!!!!!!!!!!!!!!!!!!!")
+
+                        """
+                        elem_counter = 0
+                        for elems in model.decoder.children():
+                            if (elem_counter % 2) == 0:
+                                elems.weight.grad *= 0.5
+                            elem_counter += 1
+                        """
+
+                        if not nan:
+                            optimizer.step()
     
-                        #meter_accuracy.add(out_labels.data, labels.data)
-                        meter_loss.add(loss.data[0])
-                        pbar.set_postfix(loss=meter_loss.value()[0], lambda_=lambda_)
-                        pbar.update()
+                            if mcaps.isnan(model.convcaps1.W):
+                                print("isnan")
+                            if mcaps.isnan(model.convcaps2.W):
+                                print("isnan")
+                            for q in range(len(model.primary_caps.capsules_activation)):
+                                if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
+                                    print("isnan")
+                                if mcaps.isnan(model.primary_caps.capsules_pose[q].weight):
+                                    print("isnan")
+                            if mcaps.isnan(model.conv1.weight):
+                                print("isnan")
+                            if mcaps.isnan(model.conv2.weight):
+                                print("isnan")
+
+                            #meter_accuracy.add(out_labels.data, labels.data)
+                            meter_loss.add(loss.data[0])
+                            pbar.set_postfix(loss=meter_loss.value()[0], lambda_=lambda_, recon_=recon.sum())
+                            pbar.update()
 
                 ground_truth_logger.log(
                     make_grid(imgs.data, nrow=int(args.batch_size ** 0.5), normalize=True,
