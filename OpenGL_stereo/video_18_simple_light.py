@@ -67,7 +67,19 @@ class ObjLoader:
 
         self.model = np.array(self.model, dtype='float32')
 
-def render_to_jpg(filename, format="PNG"):
+def snapToNumpy():
+    x, y, width, height = glGetDoublev(GL_VIEWPORT)
+    width, height = int(width), int(height)
+    glPixelStorei(GL_PACK_ALIGNMENT, 1)
+    data = glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE)
+    image = Image.frombytes("RGB", (width, height), data)
+    image = image.transpose(Image.FLIP_TOP_BOTTOM)
+    image = image.resize((100,100), Image.ANTIALIAS)
+    array = np.array(image)
+    #im = Image.fromarray(array)
+    return array
+
+def save_to_jpg(filename, array, format="PNG"):
     #filename = "dump_1.png"
     os.chdir(r"./dumps")
     while True:
@@ -85,13 +97,7 @@ def render_to_jpg(filename, format="PNG"):
         if (file != filename):
             break
 
-    x, y, width, height = glGetDoublev(GL_VIEWPORT)
-    width, height = int(width), int(height)
-    glPixelStorei(GL_PACK_ALIGNMENT, 1)
-    data = glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE)
-    image = Image.frombytes("RGB", (width, height), data)
-    image = image.transpose(Image.FLIP_TOP_BOTTOM)
-    image = image.resize((100,100), Image.ANTIALIAS)
+    image = Image.fromarray(array)
     image.save(filename, format)
     os.chdir(r"..")
 
@@ -110,7 +116,7 @@ eye_distance = 0.2
 def key_callback(window, key, scancode, action, mode):
     if key == glfw.KEY_F12 and action == glfw.PRESS:
         global make_samples_count
-        make_samples_count = 1000
+        make_samples_count = 20000
         #render_to_jpg()
     if key == glfw.KEY_ESCAPE:
         global rot_a
@@ -240,7 +246,7 @@ def main():
     glEnable(GL_DEPTH_TEST)
     #glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
 
-    focus_distance = 1.0
+    focus_distance = 1.4
     view = pyrr.matrix44.create_from_translation(pyrr.Vector3([0.0, 0.0, -focus_distance]))
     projection = pyrr.matrix44.create_perspective_projection_matrix(65.0, w_width / w_height, 0.1, 100.0)
     model = pyrr.matrix44.create_from_translation(pyrr.Vector3([0.0, 0.0, 0.0]))
@@ -264,12 +270,16 @@ def main():
             rot = pyrr.Matrix44.from_x_rotation(random.random()*2*math.pi)
             rot *= pyrr.Matrix44.from_y_rotation(random.random()*2*math.pi)
             trans = pyrr.Matrix44.identity(float)
-            trans[3,0] = pos_x #+ random.random()*0.4 - 0.2
-            trans[3,1] = pos_y #+ random.random()*0.2 - 0.1
+            dx = random.random()*0.4 - 0.2
+            dy = random.random()*0.4 - 0.2
+            dz = random.random()*0.4 - 0.2
+            trans[3,0] = pos_x + dx
+            trans[3,1] = pos_y + dy
+            trans[3,2] = dz
             eye_angle = eye_distance/focus_distance
 
             q = pyrr.Quaternion.from_matrix(rot)
-            stereo_filename = '0.0_0.0_0.0_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
+            stereo_filename = str(dx) + '_' + str(dy) + '_' + str(dz) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
 
             right_eye_transform = pyrr.Matrix44.from_y_rotation(eye_angle/2)
             left_eye_transform = pyrr.Matrix44.from_y_rotation(-eye_angle/2)
@@ -278,18 +288,28 @@ def main():
             #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
-            render_to_jpg(stereo_filename+'_r.png')
+            right_array = snapToNumpy()
+            #render_to_jpg(stereo_filename+'_r.png')
 
-            time.sleep(0.1)
+            time.sleep(0.2)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             glUniformMatrix4fv(transform_loc, 1, GL_FALSE, left_eye_transform*rot*trans)
             #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
-            render_to_jpg(stereo_filename+'_l.png')
+            left_array = snapToNumpy()
+            
+            array = np.concatenate((left_array,right_array), axis=1)
+            
+            #array = np.insert(left_array,left_array.shape[1],right_array.transpose(), axis=1)
+            
+            #array = np.stack([right_array[:,:,0], left_array[:,:,0]], axis=-1) 
+            
+            save_to_jpg(stereo_filename+'.png', array)
+            #render_to_jpg(stereo_filename+'_l.png')
 
-            time.sleep(0.1)
+            time.sleep(1)
             
             make_samples_count -= 1
            

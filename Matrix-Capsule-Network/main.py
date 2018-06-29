@@ -17,6 +17,7 @@ from torchvision.utils import make_grid
 import numpy as np
 import random
 import os
+import glob
 
 import argparse
 from tqdm import tqdm
@@ -49,7 +50,8 @@ class MyImageFolder(datasets.ImageFolder):
             sample = self.transform(sample)
         data = path.split('/')
         data = data[-1].split('_')
-        data = [float(i) for i in data[:-1]]
+        data[-1] = data[-1].split('.p')[0]
+        data = [float(i) for i in data]
         target = np.asarray(data)
         return sample, target
 
@@ -57,16 +59,18 @@ class MyImageFolder(datasets.ImageFolder):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
 
-    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--test-batch_size', type=int, default=32)
     parser.add_argument('--num_epochs', type=int, default=500)
     parser.add_argument('--lr', type=float, default=2e-3)
+    parser.add_argument('--lr-forced', type=float, default=False)
     parser.add_argument('--clip', type=float, default=5)
     parser.add_argument('--r', type=int, default=3)
     parser.add_argument('--disable_cuda', action='store_true',
                         help='Disable CUDA')
     parser.add_argument('--print_freq', type=int, default=10)
-    parser.add_argument('--pretrained', type=str, default="")
+    parser.add_argument('--pretrained', type=str, default="",
+                        help='pretrained epoch number')
     parser.add_argument('--num-classes', type=int, default=1, metavar='N',
                         help='number of output classes (default: 10)')
     parser.add_argument('--gpu', type=int, default=0, help="which gpu to use")
@@ -106,8 +110,10 @@ if __name__ == '__main__':
     confusion_logger = VisdomLogger('heatmap', opts={'title': 'Confusion matrix',
                                                      'columnnames': list(range(args.num_classes)),
                                                      'rownames': list(range(args.num_classes))}, env=args.env_name)
-    ground_truth_logger = VisdomLogger('image', opts={'title': 'Ground Truth'}, env=args.env_name)
-    reconstruction_logger = VisdomLogger('image', opts={'title': 'Reconstruction'}, env=args.env_name)
+    ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env=args.env_name)
+    ground_truth_logger_right = VisdomLogger('image', opts={'title': 'Ground Truth, right'}, env=args.env_name)
+    reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env=args.env_name)
+    reconstruction_logger_right = VisdomLogger('image', opts={'title': 'Reconstruction, right'}, env=args.env_name)
 
     weight_folder = 'weights/{}'.format(args.env_name.replace(' ', '_'))
     if not os.path.isdir(weight_folder):
@@ -117,7 +123,7 @@ if __name__ == '__main__':
 
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True, eps=1e-3) #, eps=1e-3
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, amsgrad=True) #, eps=1e-3)
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1, verbose=True)
 
     train_dataset = MyImageFolder(root='./data/dumps/', transform=transforms.ToTensor(),
@@ -143,7 +149,27 @@ if __name__ == '__main__':
     steps, lambda_, m = len(train_dataset) // args.batch_size, 1e-3, 0.2
 
     if args.pretrained:
-        model.load_state_dict(torch.load(args.pretrained))
+        
+        if args.pretrained == 'latest':
+            model_name = max(glob.iglob("./weights/em_capsules/model*.pth"),key=os.path.getctime)
+            optim_name = max(glob.iglob("./weights/em_capsules/optim*.pth"),key=os.path.getctime)
+        else:
+            model_name = "./weights/em_capsules/model_{}.pth".format(args.pretrained)
+            optim_name = "./weights/em_capsules/optim.pth"
+        
+        model.load_state_dict( torch.load(model_name) )
+        optimizer.load_state_dict( torch.load(optim_name) )
+
+        # Temporary PyTorch bugfix: https://github.com/pytorch/pytorch/issues/2830
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.cuda()
+        
+        if args.lr_forced:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
+        
         m = 0.8
         lambda_ = 0.9
 
@@ -162,38 +188,82 @@ if __name__ == '__main__':
             loss = 0
 
             with tqdm(total=steps) as pbar:
-                for counter in range(10):
-                    for data in train_loader:
-                        step += 1
-                        if lambda_ < 1:
-                            lambda_ += 2e-1 / steps
-                        if m < 0.9:
-                            m += 2e-1 / steps
-    
-                        optimizer.zero_grad()
-    
-                        imgs, labels = data  # b,1,28,28; #b
-                        imgs = imgs[:,0,:,:].unsqueeze(1) # use only red channel
-                        imgs = gaussian(imgs, True, 0.0, 0.1)
-                        
-                        imgs, labels = Variable(imgs), Variable(labels)
-                        if use_cuda:
-                            imgs = imgs.cuda()
-                            labels = labels.cuda()
+                for data in train_loader:
+                    step += 1
+                    if lambda_ < 1:
+                        lambda_ += 2e-1 / steps
+                    if m < 0.9:
+                        m += 2e-1 / steps
 
-                        # DEBUG STUFF
-                        print(debugcounter)
-                        if debugcounter == 48:
-                            debcounter = 48
-                        debugcounter += 1
+                    optimizer.zero_grad()
 
-                        out_labels, recon = model(imgs, lambda_)#, labels)
-    
-                        recon = recon.view_as(imgs)
-                        loss = capsule_loss(imgs, out_labels, labels, m, recon)
-    
-                        loss.backward()
-                        
+                    imgs, labels = data  # b,1,28,28; #b
+                    #imgs = imgs[:,0,:,:].unsqueeze(1) # use only red channel
+                    
+                    # Split in 2 stereo images,
+                    # and merge to 2 channel, red only
+                    left = imgs[:,:,:,:int(imgs.shape[-1]/2)]
+                    right = imgs[:,:,:,int(imgs.shape[-1]/2):]
+                    imgs_two_channel_red = np.stack([left[:,0,:,:],right[:,0,:,:]], axis=1)
+                    
+                    #ground_truth_logger.log(imgs_two_channel_red[:,0,:,:].squeeze())
+                    #reconstruction_logger.log(imgs_two_channel_red[:,1,:,:].squeeze())
+                    
+                    #imgs = gaussian(imgs, True, 0.0, 0.1)
+                    two_channel = torch.from_numpy(imgs_two_channel_red)
+                    imgs, labels = Variable(two_channel), Variable(labels)
+                    if use_cuda:
+                        imgs = imgs.cuda()
+                        labels = labels.cuda()
+
+                    # DEBUG STUFF
+                    print(debugcounter)
+                    if debugcounter == 48:
+                        debcounter = 48
+                    debugcounter += 1
+
+                    out_labels, recon = model(imgs, lambda_)#, labels)
+
+                    recon = recon.view_as(imgs)
+                    loss = capsule_loss(imgs, out_labels, labels, m, recon)
+
+                    loss.backward()
+                    
+                    for q in range(len(model.primary_caps.capsules_activation)):
+                        if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
+                            print("isnan")
+                        if mcaps.isnan(model.primary_caps.capsules_pose[q].weight):
+                            print("isnan")
+                    if mcaps.isnan(model.conv1.weight):
+                        print("isnan")
+                    if mcaps.isnan(model.conv2.weight):
+                        print("isnan")
+                    if mcaps.isnan(model.convcaps1.W):
+                        print("isnan")
+                    if mcaps.isnan(model.convcaps2.W):
+                        print("isnan")
+
+                    nan = False
+                    if mcaps.isnan(model.convcaps1.W.grad) or mcaps.isnan(model.convcaps1.beta_v.grad) or mcaps.isnan(model.convcaps1.beta_a.grad):
+                        nan = True
+                        #scheduler._reduce_lr(epoch)
+                        print("nan nan nan nan nan nan nan!!!!!!!!!!!!!!!!!!!!!!!")
+
+                    """
+                    elem_counter = 0
+                    for elems in model.decoder.children():
+                        if (elem_counter % 2) == 0:
+                            elems.weight.grad *= 0.5
+                        elem_counter += 1
+                    """
+
+                    if not nan:
+                        optimizer.step()
+
+                        if mcaps.isnan(model.convcaps1.W):
+                            print("isnan")
+                        if mcaps.isnan(model.convcaps2.W):
+                            print("isnan")
                         for q in range(len(model.primary_caps.capsules_activation)):
                             if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
                                 print("isnan")
@@ -203,52 +273,29 @@ if __name__ == '__main__':
                             print("isnan")
                         if mcaps.isnan(model.conv2.weight):
                             print("isnan")
-                        if mcaps.isnan(model.convcaps1.W):
-                            print("isnan")
-                        if mcaps.isnan(model.convcaps2.W):
-                            print("isnan")
 
-                        nan = False
-                        if mcaps.isnan(model.convcaps1.W.grad) or mcaps.isnan(model.convcaps1.beta_v.grad) or mcaps.isnan(model.convcaps1.beta_a.grad):
-                            nan = True
-                            #scheduler._reduce_lr(epoch)
-                            print("nan nan nan nan nan nan nan!!!!!!!!!!!!!!!!!!!!!!!")
+                        #meter_accuracy.add(out_labels.data, labels.data)
+                        meter_loss.add(loss.data[0])
+                        pbar.set_postfix(loss=meter_loss.value()[0], lambda_=lambda_, recon_=recon.sum())
+                        pbar.update()
 
-                        """
-                        elem_counter = 0
-                        for elems in model.decoder.children():
-                            if (elem_counter % 2) == 0:
-                                elems.weight.grad *= 0.5
-                            elem_counter += 1
-                        """
 
-                        if not nan:
-                            optimizer.step()
-    
-                            if mcaps.isnan(model.convcaps1.W):
-                                print("isnan")
-                            if mcaps.isnan(model.convcaps2.W):
-                                print("isnan")
-                            for q in range(len(model.primary_caps.capsules_activation)):
-                                if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
-                                    print("isnan")
-                                if mcaps.isnan(model.primary_caps.capsules_pose[q].weight):
-                                    print("isnan")
-                            if mcaps.isnan(model.conv1.weight):
-                                print("isnan")
-                            if mcaps.isnan(model.conv2.weight):
-                                print("isnan")
+                    #ground_truth_logger.log(imgs_two_channel_red[:,0,:,:].squeeze())
+                    #reconstruction_logger.log(imgs_two_channel_red[:,1,:,:].squeeze())
 
-                            #meter_accuracy.add(out_labels.data, labels.data)
-                            meter_loss.add(loss.data[0])
-                            pbar.set_postfix(loss=meter_loss.value()[0], lambda_=lambda_, recon_=recon.sum())
-                            pbar.update()
 
-                ground_truth_logger.log(
-                    make_grid(imgs.data, nrow=int(args.batch_size ** 0.5), normalize=True,
+                ground_truth_logger_left.log(
+                    make_grid(imgs.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
                               range=(0, 1)).cpu().numpy())
-                reconstruction_logger.log(
-                    make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True,
+                ground_truth_logger_right.log(
+                    make_grid(imgs.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
+                              range=(0, 1)).cpu().numpy())
+
+                reconstruction_logger_left.log(
+                    make_grid(recon.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
+                              range=(0, 1)).cpu().numpy())
+                reconstruction_logger_right.log(
+                    make_grid(recon.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
                               range=(0, 1)).cpu().numpy())
 
 
@@ -266,6 +313,7 @@ if __name__ == '__main__':
                 print("Epoch{} Train loss:{:4}".format(epoch, loss))
                 scheduler.step(loss)
                 torch.save(model.state_dict(), "./weights/em_capsules/model_{}.pth".format(epoch))
+                torch.save(optimizer.state_dict(), "./weights/em_capsules/optim.pth".format(epoch))
 
                 reset_meters()
 

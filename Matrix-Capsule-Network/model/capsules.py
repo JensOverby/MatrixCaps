@@ -105,7 +105,10 @@ class ConvCaps(nn.Module):
 
     def coordinate_addition(self, width_in, votes):
         add = [[i / width_in, j / width_in] for i in range(width_in) for j in range(width_in)]  # K,K,w,w
-        add = Variable(torch.Tensor(add).cuda()).view(1, 1, self.K, self.K, 1, 1, 1, 2)
+        add = torch.Tensor(add)
+        if self.W.is_cuda:
+            add.cuda()
+        add = Variable(add).view(1, 1, self.K, self.K, 1, 1, 1, 2)
         add = add.expand(self.b, self.B, self.K, self.K, self.C, 1, 1, 2).contiguous()
         votes[:, :, :, :, :, :, :, :2, -1] = votes[:, :, :, :, :, :, :, :2, -1] + add
         return votes
@@ -121,7 +124,10 @@ class ConvCaps(nn.Module):
         aag = 1,self.C,1
         
         # routing coefficient
-        R = Variable(torch.ones([i for i in a_.shape]), requires_grad=False).cuda() / a_.shape[-1]
+        R = Variable(torch.ones([i for i in a_.shape]), requires_grad=False) / a_.shape[-1]
+        if self.W.is_cuda:
+            R.cuda()
+
 
         for i in range(self.iteration):
             # M-step
@@ -156,7 +162,9 @@ class ConvCaps(nn.Module):
 
     def EM_routing(self, lambda_, a_, V):
         # routing coefficient
-        R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False).cuda() / self.Cww
+        R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False) / self.Cww
+        if self.W.is_cuda:
+            R.cuda()
 
         for i in range(self.iteration):
             # M-step
@@ -249,7 +257,7 @@ class ConvCaps(nn.Module):
 class CapsNet(nn.Module):
     def __init__(self, args, A=32, AA=32, B=32, C=32, D=32, E=10, r=3, h=4):
         super(CapsNet, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=A,
+        self.conv1 = nn.Conv2d(in_channels=2, out_channels=A,
                                kernel_size=5, stride=2)
         self.conv2 = nn.Conv2d(in_channels=A, out_channels=AA,
                                kernel_size=5, stride=2, padding=1)
@@ -261,12 +269,12 @@ class CapsNet(nn.Module):
         self.classcaps = ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r,
                                   coordinate_add=True, transform_share=True)
 
-        lin1 = nn.Linear(h*h * args.num_classes, 1024)
-        lin1.weight.data *= 50.0
-        lin2 = nn.Linear(1024, 10240)
-        lin2.weight.data *= 1.0
-        lin3 = nn.Linear(10240, 10000)
-        lin3.weight.data *= 1.0
+        lin1 = nn.Linear(h*h * args.num_classes, 512)
+        lin1.weight.data *= 50.0 # inialize weights strongest here!
+        lin2 = nn.Linear(512, 4096)
+        lin2.weight.data *= 0.1
+        lin3 = nn.Linear(4096, 20000)
+        lin3.weight.data *= 0.1
 
         
         self.decoder = nn.Sequential(
