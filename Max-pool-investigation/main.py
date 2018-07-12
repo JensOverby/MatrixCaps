@@ -7,7 +7,6 @@ Created on Jun 28, 2018
 import torch
 import torchvision
 from torch import nn
-import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -42,48 +41,53 @@ dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 class autoencoder(nn.Module):
     def __init__(self):
         super(autoencoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 16, 4, stride=2),  # b, 16, 13, 13
+            nn.ReLU(True),
+            nn.Conv2d(16, 16, 3, stride=2),  # b, 16, 6, 6
+            nn.ReLU(True),
+            nn.Conv2d(16, 8, 4, stride=1),  # b, 8, 3, 3
+            nn.ReLU(True)
+            
+            #nn.Conv2d(1, 16, 3, stride=3, padding=1),  # b, 16, 10, 10
+            #nn.ReLU(True),
+            #nn.MaxPool2d(2, stride=2),  # b, 16, 5, 5
+            #nn.Conv2d(16, 8, 3, stride=2, padding=1),  # b, 8, 3, 3
+            #nn.ReLU(True),
+            #nn.MaxPool2d(2, stride=1)  # b, 8, 2, 2
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(8, 16, 4, stride=1),  # b, 16, 6, 6
+            nn.ReLU(True),
+            nn.ConvTranspose2d(16, 16, 3, stride=2),  # b, 16, 13, 13
+            nn.ReLU(True),
+            nn.ConvTranspose2d(16, 1, 4, stride=2),  # b, 1, 28, 28
+            nn.Tanh()
 
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=16,
-                               kernel_size=3, stride=3, padding=1)
-        #nn.ReLU(True),
-        #nn.MaxPool2d(2, stride=2),  # b, 16, 5, 5
-        self.conv2 = nn.Conv2d(in_channels=16, out_channels=8,
-                               kernel_size=3, stride=2, padding=1)
-        #nn.ReLU(True),
-        #nn.MaxPool2d(2, stride=1)  # b, 8, 2, 2
-
-
-        self.convtrans1 = nn.ConvTranspose2d(in_channels=8, out_channels=16,
-                                kernel_size=3, stride=2, padding=1)  # b, 16, 5, 5
-        #nn.ReLU(True),
-        self.convtrans2 = nn.ConvTranspose2d(in_channels=16, out_channels=1,
-                                kernel_size=3, stride=3, padding=1)  # b, 8, 15, 15
-        #nn.ReLU(True),
-        #self.convtrans3 = nn.ConvTranspose2d(8, 1, 2, stride=2, padding=1),  # b, 1, 28, 28
-        #nn.Tanh()
+            
+            #nn.ConvTranspose2d(8, 16, 3, stride=2),  # b, 16, 5, 5
+            #nn.ReLU(True),
+            #nn.ConvTranspose2d(16, 8, 5, stride=3, padding=1),  # b, 8, 15, 15
+            #nn.ReLU(True),
+            #nn.ConvTranspose2d(8, 1, 2, stride=2, padding=1),  # b, 1, 28, 28
+            #nn.Tanh()
+        )
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x, id1 = F.max_pool2d(x,2, 2, return_indices=True)
-        x = F.relu(self.conv2(x))
-        x, id2 = F.max_pool2d(x,2, 1, return_indices=True)
-
-        x = F.max_unpool2d(x, id2, 2, 1)
-        x = self.convtrans1(x)
-        x = F.relu(x)
-        x = F.max_unpool2d(x, id1, 2, 2)
-        x = F.tanh(self.convtrans2(x))
+        x = self.encoder(x)
+        x = self.decoder(x)
         return x
 
 
-model = autoencoder().cuda()
+model = autoencoder().cpu() #cuda()
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,
+                             weight_decay=1e-5)
 
 for epoch in range(num_epochs):
     for data in dataloader:
         img, _ = data
-        img = Variable(img).cuda()
+        img = Variable(img).cpu() #cuda()
         # ===================forward=====================
         output = model(img)
         loss = criterion(output, img)

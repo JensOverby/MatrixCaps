@@ -105,66 +105,24 @@ class ConvCaps(nn.Module):
 
     def coordinate_addition(self, width_in, votes):
         add = [[i / width_in, j / width_in] for i in range(width_in) for j in range(width_in)]  # K,K,w,w
-        add = torch.Tensor(add)
         if self.W.is_cuda:
-            add.cuda()
+            add = torch.Tensor(add).cuda()
+        else:
+            add = torch.Tensor(add)
         add = Variable(add).view(1, 1, self.K, self.K, 1, 1, 1, 2)
         add = add.expand(self.b, self.B, self.K, self.K, self.C, 1, 1, 2).contiguous()
         votes[:, :, :, :, :, :, :, :2, -1] = votes[:, :, :, :, :, :, :, :2, -1] + add
         return votes
 
-    def down_w(self, w):
-        return range(w * self.stride, w * self.stride + self.K)
-
-#[i for j in ([k for k in poses.shape[:-1]], [-1]) for i in j]
-
-    def EM_routing_(self, lambda_, a_, V):
-        b_C_w = self.b, self.C, 25, -1
-        kaj = 1,self.C,1,1
-        aag = 1,self.C,1
-        
-        # routing coefficient
-        R = Variable(torch.ones([i for i in a_.shape]), requires_grad=False) / a_.shape[-1]
-        if self.W.is_cuda:
-            R.cuda()
-
-
-        for i in range(self.iteration):
-            # M-step
-            R = (R * a_).unsqueeze(-1)
-            sum_R = R.sum(1)
-            mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
-            sigma_square = (R * (V - mu) ** 2).sum(1) / sum_R
-
-            cost = (self.beta_v.view(kaj) + torch.log(sigma_square.sqrt().view(b_C_w)+self.eps)) * sum_R.view(b_C_w)
-            a = torch.sigmoid(lambda_ * (self.beta_a.view(aag) - cost.sum(-1)))
-            a = a.view(self.b, -1)
-
-            # E-step
-            if i != self.iteration - 1:
-                mu, sigma_square, V_, a__ = mu.data, sigma_square.data, V.data, a.data
-
-                
-                
-                #o_p_unit0 = - torch.sum(((V_ - mu) ** 2) / (2 * sigma_square.unsqueeze(1)), dim=-1, keepdim=True)
-                #o_p_unit2 = - torch.sum(torch.log(sigma_square.sqrt() + self.eps), dim=-1, keepdim=True)
-                #o_p = o_p_unit0 + o_p_unit2.unsqueeze(1)
-                #zz = a__[:,None,:,None] + torch.exp(o_p)
-                #R = F.softmax(zz.squeeze(), dim=len(zz.shape)-2)
-                
-                
-                normal = Normal(mu, sigma_square.unsqueeze(1) ** (1 / 2))
-                p = torch.exp(normal.log_prob(V_+self.eps))
-                ap = a__.unsqueeze(1) * p.sum(-1)
-                R = Variable(ap / torch.sum(ap, -1).unsqueeze(-1), requires_grad=False) + self.eps
-
-        return a, mu
+    #def down_w(self, w):
+    #    return range(w * self.stride, w * self.stride + self.K)
 
     def EM_routing(self, lambda_, a_, V):
         # routing coefficient
-        R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False) / self.Cww
         if self.W.is_cuda:
-            R.cuda()
+            R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False).cuda() / self.Cww
+        else:
+            R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False) / self.Cww
 
         for i in range(self.iteration):
             # M-step
@@ -179,6 +137,7 @@ class ConvCaps(nn.Module):
 
             # E-step
             if i != self.iteration - 1:
+                #mu, sigma_square, V_, a__ = mu.data, sigma_square.data, V.data, a.data
                 normal = Normal(mu, sigma_square.sqrt())
                 p = torch.exp(normal.log_prob(V+self.eps))   # https://stackoverflow.com/questions/40472499/issue-nan-with-adam-solver
                 ap = a[:,None,:] * p.sum(-1)
@@ -214,7 +173,7 @@ class ConvCaps(nn.Module):
         width_in = poses.size(2)
         w = int((width_in - self.K) / self.stride + 1) if self.K else 1  # 5
         self.Cww = w * w * self.C
-        self.b = poses.size(0)
+        #self.b = poses.size(0)
 
         if self.transform_share:
             if self.K == 0:
@@ -226,8 +185,8 @@ class ConvCaps(nn.Module):
         self.Bkk = self.K * self.K * self.B
 
         # used to store every capsule i's poses in each capsule c's receptive field
-        pose = poses.contiguous()  # b,16*32,12,12
-        pose = pose.view(self.b, self.hh, self.B, width_in, width_in).permute(0, 2, 3, 4, 1).contiguous()  # b,B,12,12,16
+        #pose = poses.contiguous()  # b,16*32,12,12
+        pose = poses.view(self.b, self.hh, self.B, width_in, width_in).permute(0, 2, 3, 4, 1).contiguous()  # b,B,12,12,16
         poses = torch.stack([pose[:, :, self.stride * i:self.stride * i + self.K,
                              self.stride * j:self.stride * j + self.K, :] for i in range(w) for j in range(w)],
                             dim=-1)  # b,B,K,K,w*w,16
@@ -237,16 +196,21 @@ class ConvCaps(nn.Module):
 
         if self.coordinate_add:
             votes = self.coordinate_addition(width_in, votes)
-            activation = activations.view(self.b, -1)[..., None].repeat(1, 1, self.Cww)
+            activations_ = activations.view(self.b, -1)[..., None].repeat(1, 1, self.Cww)
         else:
-            activations_ = [activations[:, :, self.down_w(x), :][:, :, :, self.down_w(y)]
-                            for x in range(w) for y in range(w)]
-            activation = torch.stack(
-                activations_, dim=4).view(self.b, self.Bkk, 1, -1) \
-                .repeat(1, 1, self.C, 1).view(self.b, self.Bkk, self.Cww)
+            activations_ = torch.stack([activations[:, :, self.stride * i:self.stride * i + self.K,
+                                 self.stride * j:self.stride * j + self.K] for i in range(w) for j in range(w)],
+                                dim=-1)  # b,B,K,K,w*w
+            activations_ = activations_.view(self.b, self.Bkk, 1, -1).repeat(1, 1, self.C, 1).view(self.b, self.Bkk, self.Cww)
+            
+            #activations_ = [activations[:, :, self.down_w(x), :][:, :, :, self.down_w(y)]
+            #                for x in range(w) for y in range(w)]
+            #activation = torch.stack(
+            #    activations_, dim=4).view(self.b, self.Bkk, 1, -1) \
+            #    .repeat(1, 1, self.C, 1).view(self.b, self.Bkk, self.Cww)
 
         votes = votes.view(self.b, self.Bkk, self.Cww, self.hh)
-        activations, poses = getattr(self, self.routing)(lambda_, activation, votes)
+        activations, poses = getattr(self, self.routing)(lambda_, activations_, votes)
         
         if isnan(activations) or isnan(poses):
             print("nan")
@@ -289,6 +253,8 @@ class CapsNet(nn.Module):
             nn.Sigmoid()
         )
 
+        self.args = args
+
         """
         elem_counter = 0
         for elems in self.decoder.children():
@@ -300,20 +266,24 @@ class CapsNet(nn.Module):
         
         self.num_classes = E
         
-    def forward(self, x, lambda_, y=None):  # b,1,28,28
-        x = F.relu(self.conv1(x))  # b,32,12,12
-        x = F.max_pool2d(x,2, 2, 1)
-        x = F.relu(self.conv2(x))  # b,32,12,12
-        x = self.primary_caps(x)  # b,32*(4*4+1),12,12
-        x = self.convcaps1(x, lambda_)  # b,32*(4*4+1),5,5
-        x = self.convcaps2(x, lambda_)  # b,32*(4*4+1),3,3
-        p, a = self.classcaps(x, lambda_)  # b,10*16+10
-
-        p = p.squeeze()
+    def forward(self, x, lambda_, labels=None):  # b,1,28,28
+        if not self.args.disable_encoder:
+            x = F.relu(self.conv1(x))  # b,32,12,12
+            x = F.max_pool2d(x,2, 2, 1)
+            x = F.relu(self.conv2(x))  # b,32,12,12
+            x = self.primary_caps(x)  # b,32*(4*4+1),12,12
+            x = self.convcaps1(x, lambda_)  # b,32*(4*4+1),5,5
+            x = self.convcaps2(x, lambda_)  # b,32*(4*4+1),3,3
+            p, a = self.classcaps(x, lambda_)  # b,10*16+10
+    
+            p = p.squeeze()
+            
+            # Temporary when batch size = 1
+            if len(p.shape) == 1:
+                p = p.unsqueeze(0)
+        else:
+            p = labels
         
-        # Temporary when batch size = 1
-        if len(p.shape) == 1:
-            p = p.unsqueeze(0)
 
         #if y is None:
         #    _, y = a.max(dim=1)
@@ -321,18 +291,23 @@ class CapsNet(nn.Module):
 
         # convert to one hot
         #y = Variable(torch.eye(self.num_classes)).cuda().index_select(dim=0, index=y)
+        if not self.args.disable_recon:
+            reconstructions = self.decoder(p)
+        else:
+            reconstructions = 0
 
-        reconstructions = self.decoder(p)
-
-        return a.squeeze(), reconstructions
+        return p, reconstructions
+        #return a.squeeze(), reconstructions
 
 
 class CapsuleLoss(nn.Module):
     def __init__(self, args):
         super(CapsuleLoss, self).__init__()
         self.reconstruction_loss = nn.MSELoss(size_average=False)
-        self.loss = args.loss
-        self.use_recon = args.use_recon
+        self.loss = nn.MSELoss(size_average=False) #args.loss
+        #self.use_recon = args.use_recon
+        #self.no_labels = args.no_labels
+        self.args = args
 
     @staticmethod
     def spread_loss(x, target, m):  # x:b,10 target:b
@@ -355,11 +330,15 @@ class CapsuleLoss(nn.Module):
         margin_loss = margin_loss.sum()
         return margin_loss * 1/x.size(0)
 
-    def forward(self, images, output, labels, m, recon):
+    def forward(self, images, output=None, labels=None, recon=None):
         #main_loss = getattr(self, self.loss)(output, labels, m)
+        if self.args.disable_encoder:
+            main_loss = 0
+        else:
+            main_loss = self.loss(output, labels)
 
-        #if self.use_recon:
-        recon_loss = self.reconstruction_loss(recon, images)
-        main_loss = self.use_recon * recon_loss
+        if not self.args.disable_recon:
+            recon_loss = self.reconstruction_loss(recon, images)
+            main_loss += self.args.recon_factor * recon_loss
 
         return main_loss

@@ -23,6 +23,7 @@ import argparse
 from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
+import pyrr
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
@@ -52,22 +53,38 @@ class MyImageFolder(datasets.ImageFolder):
         data = data[-1].split('_')
         data[-1] = data[-1].split('.p')[0]
         data = [float(i) for i in data]
-        target = np.asarray(data)
+        
+        data = np.asarray(data)
+        mat44 = pyrr.Matrix44.from_quaternion(data[3:])
+        mat44[3,0] = data[0]
+        mat44[3,1] = data[1]
+        mat44[3,2] = data[2]
+        target = np.asarray(mat44)
+        
+        #data.append(0.0)
+        #data.append(0.0)
+        #target = np.asarray(data)
+        
         return sample, target
 
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
 
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--test-batch_size', type=int, default=32)
     parser.add_argument('--num_epochs', type=int, default=500)
-    parser.add_argument('--lr', type=float, default=2e-3)
-    parser.add_argument('--lr-forced', type=float, default=False)
+    parser.add_argument('--lr', type=float, default=2e-5)
+    parser.add_argument('--lr-forced', action='store_true')
+    #parser.add_argument('--no-labels', action='store_true')
     parser.add_argument('--clip', type=float, default=5)
     parser.add_argument('--r', type=int, default=3)
-    parser.add_argument('--disable_cuda', action='store_true',
+    parser.add_argument('--disable-cuda', action='store_true',
                         help='Disable CUDA')
+    parser.add_argument('--disable-recon', action='store_true',
+                        help='Disable Reconstruction')
+    parser.add_argument('--disable-encoder', action='store_true',
+                        help='Disable Encoding')
     parser.add_argument('--print_freq', type=int, default=10)
     parser.add_argument('--pretrained', type=str, default="",
                         help='pretrained epoch number')
@@ -80,7 +97,7 @@ if __name__ == '__main__':
                         help='loss to use: cross_entropy_loss, margin_loss, spread_loss')
     parser.add_argument('--routing', type=str, default='EM_routing', metavar='N',
                         help='routing to use: angle_routing, EM_routing')
-    parser.add_argument('--use-recon', type=float, default=0.0005, metavar='N',
+    parser.add_argument('--recon-factor', type=float, default=0.0005, metavar='N',
                         help='use reconstruction loss or not')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N',
                         help='num of workers to fetch data')
@@ -95,7 +112,7 @@ if __name__ == '__main__':
     A, AA, B, C, D, E, r = 32, 64, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
     #A, B, C, D, E, r = 32, 32, 32, 32, args.num_classes, args.r  # a classic CapsNet
 
-    model = mcaps.CapsNet(args, A, AA, B, C, D, E, r)
+    model = mcaps.CapsNet(args, A, AA, B, C, D, E, r, h=4)
     capsule_loss = mcaps.CapsuleLoss(args)
 
     meter_loss = tnt.meter.AverageValueMeter()
@@ -211,7 +228,7 @@ if __name__ == '__main__':
                     
                     #imgs = gaussian(imgs, True, 0.0, 0.1)
                     two_channel = torch.from_numpy(imgs_two_channel_red)
-                    imgs, labels = Variable(two_channel), Variable(labels)
+                    imgs, labels = Variable(two_channel), Variable(labels.reshape(labels.shape[0],-1).float())
                     if use_cuda:
                         imgs = imgs.cuda()
                         labels = labels.cuda()
@@ -222,10 +239,12 @@ if __name__ == '__main__':
                         debcounter = 48
                     debugcounter += 1
 
-                    out_labels, recon = model(imgs, lambda_)#, labels)
+                    out_labels, recon = model(imgs, lambda_, labels)
 
                     recon = recon.view_as(imgs)
-                    loss = capsule_loss(imgs, out_labels, labels, m, recon)
+                    #out_labels = out_labels[:,:9]
+                    
+                    loss = capsule_loss(imgs, out_labels, labels, recon)
 
                     loss.backward()
                     
@@ -244,10 +263,11 @@ if __name__ == '__main__':
                         print("isnan")
 
                     nan = False
-                    if mcaps.isnan(model.convcaps1.W.grad) or mcaps.isnan(model.convcaps1.beta_v.grad) or mcaps.isnan(model.convcaps1.beta_a.grad):
-                        nan = True
-                        #scheduler._reduce_lr(epoch)
-                        print("nan nan nan nan nan nan nan!!!!!!!!!!!!!!!!!!!!!!!")
+                    if not args.disable_encoder:
+                        if mcaps.isnan(model.convcaps1.W.grad) or mcaps.isnan(model.convcaps1.beta_v.grad) or mcaps.isnan(model.convcaps1.beta_a.grad):
+                            nan = True
+                            #scheduler._reduce_lr(epoch)
+                            print("nan nan nan nan nan nan nan!!!!!!!!!!!!!!!!!!!!!!!")
 
                     """
                     elem_counter = 0
@@ -276,7 +296,7 @@ if __name__ == '__main__':
 
                         #meter_accuracy.add(out_labels.data, labels.data)
                         meter_loss.add(loss.data[0])
-                        pbar.set_postfix(loss=meter_loss.value()[0], lambda_=lambda_, recon_=recon.sum())
+                        pbar.set_postfix(loss=meter_loss.value()[0].item(), lambda_=lambda_, recon_=recon.sum().item())
                         pbar.update()
 
 

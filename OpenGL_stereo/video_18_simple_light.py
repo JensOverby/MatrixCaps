@@ -105,7 +105,7 @@ rot_a = 0.0
 rot_b = 0.0
 rotating = False
 pos_x = 0.0
-origo_y = -0.4
+origo_y = -0.25
 pos_y = origo_y
 translating = False
 mouse_pos_x = 0
@@ -246,7 +246,7 @@ def main():
     glEnable(GL_DEPTH_TEST)
     #glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
 
-    focus_distance = 1.4
+    focus_distance = 1.9
     view = pyrr.matrix44.create_from_translation(pyrr.Vector3([0.0, 0.0, -focus_distance]))
     projection = pyrr.matrix44.create_perspective_projection_matrix(65.0, w_width / w_height, 0.1, 100.0)
     model = pyrr.matrix44.create_from_translation(pyrr.Vector3([0.0, 0.0, 0.0]))
@@ -267,34 +267,41 @@ def main():
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if make_samples_count > 0:
+            rabbit_transform = pyrr.Matrix44.identity(float)
+            rabbit_transform[3,0] = pos_x
+            rabbit_transform[3,1] = pos_y
+            rabbit_transform[3,2] = 0
+            
             rot = pyrr.Matrix44.from_x_rotation(random.random()*2*math.pi)
             rot *= pyrr.Matrix44.from_y_rotation(random.random()*2*math.pi)
             trans = pyrr.Matrix44.identity(float)
-            dx = random.random()*0.4 - 0.2
-            dy = random.random()*0.4 - 0.2
-            dz = random.random()*0.4 - 0.2
-            trans[3,0] = pos_x + dx
-            trans[3,1] = pos_y + dy
-            trans[3,2] = dz
+            trans[3,0] = random.random()*1.0 - 0.5
+            trans[3,1] = random.random()*0.7 - 0.35
+            trans[3,2] = random.random()*0.4 - 0.2
+
             eye_angle = eye_distance/focus_distance
 
             q = pyrr.Quaternion.from_matrix(rot)
-            stereo_filename = str(dx) + '_' + str(dy) + '_' + str(dz) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
+            
+            mat = trans*rot*rabbit_transform
+            
+            stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
+            #stereo_filename1 = str(dx) + '_' + str(dy) + '_' + str(dz) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
 
             right_eye_transform = pyrr.Matrix44.from_y_rotation(eye_angle/2)
             left_eye_transform = pyrr.Matrix44.from_y_rotation(-eye_angle/2)
             
-            glUniformMatrix4fv(transform_loc, 1, GL_FALSE, right_eye_transform*rot*trans)
+            glUniformMatrix4fv(transform_loc, 1, GL_FALSE, right_eye_transform*mat)
             #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
             right_array = snapToNumpy()
             #render_to_jpg(stereo_filename+'_r.png')
 
-            time.sleep(0.2)
+            #time.sleep(0.2)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-            glUniformMatrix4fv(transform_loc, 1, GL_FALSE, left_eye_transform*rot*trans)
+            glUniformMatrix4fv(transform_loc, 1, GL_FALSE, left_eye_transform*mat)
             #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)
@@ -309,7 +316,7 @@ def main():
             save_to_jpg(stereo_filename+'.png', array)
             #render_to_jpg(stereo_filename+'_l.png')
 
-            time.sleep(1)
+            #time.sleep(0.5)
             
             make_samples_count -= 1
            
@@ -319,8 +326,10 @@ def main():
             trans = pyrr.Matrix44.identity(float)
             trans[3,0] = pos_x
             trans[3,1] = pos_y
+            mat = rot*trans
+            #print(trans[3,0],trans[3,1],trans[3,2])
     
-            glUniformMatrix4fv(transform_loc, 1, GL_FALSE, rot*trans)
+            glUniformMatrix4fv(transform_loc, 1, GL_FALSE, mat)
             #glUniformMatrix4fv(light_loc, 1, GL_FALSE, rot*trans)
             glDrawArrays(GL_TRIANGLES, 0, len(obj.vertex_index))
             glfw.swap_buffers(window)

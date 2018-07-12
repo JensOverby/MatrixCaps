@@ -149,7 +149,7 @@ def EM_routing(R, V):
         R = R.unsqueeze(-1)
         sum_R = R.sum(1)
         mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
-        sigma_square = (R * (V - mu) ** 2).sum(1) / sum_R
+        sigma_square = ((R * (V - mu) ** 2).sum(1) / sum_R).unsqueeze(1)
 
         #cost = (self.beta_v.view(kaj) + torch.log(sigma_square.sqrt().view(b_C_w)+self.eps)) * sum_R.view(b_C_w)
         #a = torch.sigmoid(lambda_ * (self.beta_a.view(aag) - cost.sum(-1)))
@@ -157,16 +157,17 @@ def EM_routing(R, V):
 
         # E-step
         if i != iteration - 1:
-            normal = Normal(mu, sigma_square.sqrt().unsqueeze(1))
+            normal = Normal(mu, sigma_square.sqrt())
             p = torch.exp(normal.log_prob(V+eps))
             ap = p.prod(-1)
 
-            plot_density(*get_density(mu.squeeze(1), sigma_square, pi, N=100, X_range=(-2, 12), Y_range=(-2, 12)), i=i)
+            plot_density(*get_density(mu.squeeze(1), sigma_square.squeeze(1), pi, N=100, X_range=(-2, 12), Y_range=(-2, 12)), i=i)
             #XYZ = torch.stack([V[:,:,0],V[:,:,1],ap], dim=-1)
             #plotXYZ(XYZ)
             
             #ap = a__.unsqueeze(1) * p.sum(-1)
             R = Variable(ap / ap.sum(0, keepdim=True), requires_grad=False) + eps
+            
             #R = Variable(ap / ap.sum(-1, keepdim=True), requires_grad=False) + eps
 
     return mu
