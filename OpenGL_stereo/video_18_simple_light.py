@@ -272,12 +272,19 @@ def main():
             rabbit_transform[3,1] = pos_y
             rabbit_transform[3,2] = 0
             
-            rot = pyrr.Matrix44.from_x_rotation(random.random()*2*math.pi)
-            rot *= pyrr.Matrix44.from_y_rotation(random.random()*2*math.pi)
+            #rot = pyrr.Matrix44.from_x_rotation(random.random()*2*math.pi)
+            #rot *= pyrr.Matrix44.from_y_rotation(random.random()*2*math.pi)
+            #trans = pyrr.Matrix44.identity(float)
+            #trans[3,0] = random.random()*1.0 - 0.5
+            #trans[3,1] = random.random()*0.7 - 0.35
+            #trans[3,2] = random.random()*0.4 - 0.2
+            
+            rot = pyrr.Matrix44.from_x_rotation(random.random()*2.0*math.pi)
+            rot *= pyrr.Matrix44.from_y_rotation(random.random()*2.0*math.pi)
             trans = pyrr.Matrix44.identity(float)
             trans[3,0] = random.random()*1.0 - 0.5
             trans[3,1] = random.random()*0.7 - 0.35
-            trans[3,2] = random.random()*0.4 - 0.2
+            trans[3,2] = 0.2
 
             eye_angle = eye_distance/focus_distance
 

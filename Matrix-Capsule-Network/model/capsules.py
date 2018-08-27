@@ -30,6 +30,45 @@ def isnan(x):
     kaj = (x != x).sum()
     return (kaj != 0)
 
+def qmat(q):
+    
+    #tmp = input[:, 3:7]
+    #q = []
+    #for e in tmp:
+    #    q.append(e.div(torch.norm(e, 2)))
+
+    #q = torch.stack(q, dim=0)
+    #q0 = q[:, 0] # obs: ret disse hvis ovenstående
+    #q1 = q[:, 1]
+    #q2 = q[:, 2]
+    #q3 = q[:, 3]
+    
+    q0 = q[:, 3] # obs: ret disse hvis ovenstående
+    q1 = q[:, 4]
+    q2 = q[:, 5]
+    q3 = q[:, 6]
+    
+    m00 = 1 - 2*(q2*q2) - 2*(q3*q3)
+    m10 = 2*(q1*q2) + 2*(q3*q0)
+    m20 = 2*(q1*q3) - 2*(q2*q0)
+    c0 = torch.stack((m00, m10, m20), dim=1)
+    
+    m01 = 2*(q1*q2) - 2*(q3*q0)
+    m11 = 1 - 2*(q1*q1) - 2*(q3*q3)
+    m21 = 2*(q2*q3) + 2*(q1*q0)
+    c1 = torch.stack((m01, m11, m21), dim=1)
+    
+    m02 = 2*(q1*q3) + 2*(q2*q0)
+    m12 = 2*(q2*q3) - 2*(q1*q0)
+    m22 = 1 - 2*(q1*q1) - 2*(q2*q2)
+    c2 = torch.stack((m02, m12, m22), dim=1)
+
+    c3 = q[:, :3]
+
+    m = torch.stack((c0, c1, c2, c3), dim=2)
+    
+    return m
+
 
 class PrimaryCaps(nn.Module):
     """
@@ -234,6 +273,7 @@ class CapsNet(nn.Module):
                                   coordinate_add=True, transform_share=True)
 
         lin1 = nn.Linear(h*h * args.num_classes, 512)
+        #lin1 = nn.Linear(3*4 * args.num_classes, 512)
         lin1.weight.data *= 50.0 # inialize weights strongest here!
         lin2 = nn.Linear(512, 4096)
         lin2.weight.data *= 0.1
@@ -283,21 +323,20 @@ class CapsNet(nn.Module):
                 p = p.unsqueeze(0)
         else:
             p = labels
-        
-
-        #if y is None:
-        #    _, y = a.max(dim=1)
-        #    y = y.squeeze()
 
         # convert to one hot
         #y = Variable(torch.eye(self.num_classes)).cuda().index_select(dim=0, index=y)
         if not self.args.disable_recon:
             reconstructions = self.decoder(p)
+            #if labels is None:
+            #    reconstructions = self.decoder(p)
+            #else:
+            #    labels44 = qmat(p).view(p.shape[0],-1)
+            #    reconstructions = self.decoder(labels44)
         else:
             reconstructions = 0
 
         return p, reconstructions
-        #return a.squeeze(), reconstructions
 
 
 class CapsuleLoss(nn.Module):
@@ -332,7 +371,7 @@ class CapsuleLoss(nn.Module):
 
     def forward(self, images, output=None, labels=None, recon=None):
         #main_loss = getattr(self, self.loss)(output, labels, m)
-        if self.args.disable_encoder:
+        if self.args.disable_encoder or labels == None:
             main_loss = 0
         else:
             main_loss = self.loss(output, labels)
