@@ -13,61 +13,13 @@ from torch.distributions import Normal
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import math
+import model.util as util
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
 random.seed(1991)
 np.random.seed(1991)
-
-
-def print_mat(x):
-    for i in range(x.size(1)):
-        plt.matshow(x[0, i].data.cpu().numpy())
-
-    plt.show()
-
-def isnan(x):
-    kaj = (x != x).sum()
-    return (kaj != 0)
-
-def qmat(q):
-    
-    #tmp = input[:, 3:7]
-    #q = []
-    #for e in tmp:
-    #    q.append(e.div(torch.norm(e, 2)))
-
-    #q = torch.stack(q, dim=0)
-    #q0 = q[:, 0] # obs: ret disse hvis ovenstående
-    #q1 = q[:, 1]
-    #q2 = q[:, 2]
-    #q3 = q[:, 3]
-    
-    q0 = q[:, 3] # obs: ret disse hvis ovenstående
-    q1 = q[:, 4]
-    q2 = q[:, 5]
-    q3 = q[:, 6]
-    
-    m00 = 1 - 2*(q2*q2) - 2*(q3*q3)
-    m10 = 2*(q1*q2) + 2*(q3*q0)
-    m20 = 2*(q1*q3) - 2*(q2*q0)
-    c0 = torch.stack((m00, m10, m20), dim=1)
-    
-    m01 = 2*(q1*q2) - 2*(q3*q0)
-    m11 = 1 - 2*(q1*q1) - 2*(q3*q3)
-    m21 = 2*(q2*q3) + 2*(q1*q0)
-    c1 = torch.stack((m01, m11, m21), dim=1)
-    
-    m02 = 2*(q1*q3) + 2*(q2*q0)
-    m12 = 2*(q2*q3) - 2*(q1*q0)
-    m22 = 1 - 2*(q1*q1) - 2*(q2*q2)
-    c2 = torch.stack((m02, m12, m22), dim=1)
-
-    c3 = q[:, :3]
-
-    m = torch.stack((c0, c1, c2, c3), dim=2)
-    
-    return m
 
 
 class PrimaryCaps(nn.Module):
@@ -83,18 +35,16 @@ class PrimaryCaps(nn.Module):
     def __init__(self, A=32, B=32, h=4):
         super(PrimaryCaps, self).__init__()
         self.B = B
-        self.capsules_pose = nn.ModuleList([nn.Conv2d(in_channels=A, out_channels=h * h,
-                                                      kernel_size=1, stride=1)
-                                            for _ in range(self.B)])
-        self.capsules_activation = nn.ModuleList([nn.Conv2d(in_channels=A, out_channels=1,
-                                                            kernel_size=1, stride=1) for _
-                                                  in range(self.B)])
+        
+        self.capsules_pose = nn.Conv2d(in_channels=A, out_channels=B*h*h,
+                            kernel_size=1, stride=1, bias=True)
+        self.capsules_activation = nn.Conv2d(in_channels=A, out_channels=B,
+                            kernel_size=1, stride=1, bias=True)
 
     def forward(self, x):  # b,14,14,32
-        poses = [self.capsules_pose[i](x) for i in range(self.B)]  # (b,16,12,12) *32
-        poses = torch.cat(poses, dim=1)  # b,16*32,12,12
-        activations = [self.capsules_activation[i](x) for i in range(self.B)]  # (b,1,12,12)*32
-        activations = F.sigmoid(torch.cat(activations, dim=1))  # b,32,12,12
+        poses = self.capsules_pose(x)
+        activations = self.capsules_activation(x)
+        activations = F.sigmoid(activations)
         return poses, activations
 
 
@@ -141,7 +91,15 @@ class ConvCaps(nn.Module):
         self.hh = self.h*self.h
         self.routing = args.routing
         self.eps = 1e-10
+        self.ln_2pi = torch.FloatTensor(1).fill_(math.log(2*math.pi))
 
+    def _apply(self, fn):
+        if fn.__qualname__.find('cuda') != -1:
+            self.ln_2pi = self.ln_2pi.cuda()
+        elif fn.__qualname__.find('cpu') != -1:
+            self.ln_2pi = self.ln_2pi.cpu()
+        super()._apply(fn)
+        
     def coordinate_addition(self, width_in, votes):
         add = [[i / width_in, j / width_in] for i in range(width_in) for j in range(width_in)]  # K,K,w,w
         if self.W.is_cuda:
@@ -153,15 +111,12 @@ class ConvCaps(nn.Module):
         votes[:, :, :, :, :, :, :, :2, -1] = votes[:, :, :, :, :, :, :, :2, -1] + add
         return votes
 
-    #def down_w(self, w):
-    #    return range(w * self.stride, w * self.stride + self.K)
-
     def EM_routing(self, lambda_, a_, V):
         # routing coefficient
         if self.W.is_cuda:
-            R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False).cuda() / self.Cww
+            R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False).cuda() / self.C
         else:
-            R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False) / self.Cww
+            R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False) / self.C
 
         for i in range(self.iteration):
             # M-step
@@ -176,11 +131,10 @@ class ConvCaps(nn.Module):
 
             # E-step
             if i != self.iteration - 1:
-                #mu, sigma_square, V_, a__ = mu.data, sigma_square.data, V.data, a.data
-                normal = Normal(mu, sigma_square.sqrt())
-                p = torch.exp(normal.log_prob(V+self.eps))   # https://stackoverflow.com/questions/40472499/issue-nan-with-adam-solver
+                ln_p_j_h = -(V - mu)**2 / (2 * sigma_square) - torch.log(sigma_square.sqrt()) - 0.5*self.ln_2pi
+                p = torch.exp(ln_p_j_h)
                 ap = a[:,None,:] * p.sum(-1)
-                R = Variable(ap / (torch.sum(ap, -1, keepdim=True) + self.eps), requires_grad=False)
+                R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + self.eps) + self.eps, requires_grad=False)
 
         return a, mu
 
@@ -241,17 +195,11 @@ class ConvCaps(nn.Module):
                                  self.stride * j:self.stride * j + self.K] for i in range(w) for j in range(w)],
                                 dim=-1)  # b,B,K,K,w*w
             activations_ = activations_.view(self.b, self.Bkk, 1, -1).repeat(1, 1, self.C, 1).view(self.b, self.Bkk, self.Cww)
-            
-            #activations_ = [activations[:, :, self.down_w(x), :][:, :, :, self.down_w(y)]
-            #                for x in range(w) for y in range(w)]
-            #activation = torch.stack(
-            #    activations_, dim=4).view(self.b, self.Bkk, 1, -1) \
-            #    .repeat(1, 1, self.C, 1).view(self.b, self.Bkk, self.Cww)
 
         votes = votes.view(self.b, self.Bkk, self.Cww, self.hh)
         activations, poses = getattr(self, self.routing)(lambda_, activations_, votes)
         
-        if isnan(activations) or isnan(poses):
+        if util.isnan(activations) or util.isnan(poses):
             print("nan")
         
         return poses.view(self.b, self.C, w, w, -1), activations.view(self.b, self.C, w, w)
@@ -260,17 +208,16 @@ class ConvCaps(nn.Module):
 class CapsNet(nn.Module):
     def __init__(self, args, A=32, AA=32, B=32, C=32, D=32, E=10, r=3, h=4):
         super(CapsNet, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=2, out_channels=A,
-                               kernel_size=5, stride=2)
-        self.conv2 = nn.Conv2d(in_channels=A, out_channels=AA,
-                               kernel_size=5, stride=2, padding=1)
+        self.conv1 = nn.Conv2d(in_channels=4, out_channels=A, kernel_size=5, stride=2, padding=2)
+        self.bn1 = nn.BatchNorm2d(num_features=A, eps=0.001, momentum=0.1, affine=True)
+        self.conv2 = nn.Conv2d(in_channels=A, out_channels=AA, kernel_size=3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm2d(num_features=AA, eps=0.001, momentum=0.1, affine=True)
+        self.conv3 = nn.Conv2d(in_channels=AA, out_channels=AA, kernel_size=3, stride=2, padding=0)
+        self.bn3 = nn.BatchNorm2d(num_features=AA, eps=0.001, momentum=0.1, affine=True)
         self.primary_caps = PrimaryCaps(AA, B, h=h)
-        self.convcaps1 = ConvCaps(args, B, C, kernel=3, stride=2, h=h, iteration=r,
-                                  coordinate_add=False, transform_share=False)
-        self.convcaps2 = ConvCaps(args, C, D, kernel=3, stride=1, h=h, iteration=r,
-                                  coordinate_add=False, transform_share=False)
-        self.classcaps = ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r,
-                                  coordinate_add=True, transform_share=True)
+        self.convcaps1 = ConvCaps(args, B, C, kernel=3, stride=2, h=h, iteration=r, coordinate_add=False, transform_share=False)
+        self.convcaps2 = ConvCaps(args, C, D, kernel=3, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
+        self.classcaps = ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r, coordinate_add=True, transform_share=True)
 
         lin1 = nn.Linear(h*h * args.num_classes, 512)
         #lin1 = nn.Linear(3*4 * args.num_classes, 512)
@@ -292,25 +239,17 @@ class CapsNet(nn.Module):
             lin3,
             nn.Sigmoid()
         )
+        self.num_classes = E
 
         self.args = args
 
-        """
-        elem_counter = 0
-        for elems in self.decoder.children():
-            if (elem_counter % 2) == 0:
-                elems.weight *= 5.0
-            elem_counter += 1
-        """
-
-        
-        self.num_classes = E
         
     def forward(self, x, lambda_, labels=None):  # b,1,28,28
         if not self.args.disable_encoder:
-            x = F.relu(self.conv1(x))  # b,32,12,12
-            x = F.max_pool2d(x,2, 2, 1)
-            x = F.relu(self.conv2(x))  # b,32,12,12
+            x = F.relu(self.bn1(self.conv1(x)))  # b,32,12,12
+            #x = F.max_pool2d(x,2, 2, 1)
+            x = F.relu(self.bn2(self.conv2(x)))  # b,32,12,12
+            x = F.relu(self.bn3(self.conv3(x)))
             x = self.primary_caps(x)  # b,32*(4*4+1),12,12
             x = self.convcaps1(x, lambda_)  # b,32*(4*4+1),5,5
             x = self.convcaps2(x, lambda_)  # b,32*(4*4+1),3,3
@@ -344,8 +283,6 @@ class CapsuleLoss(nn.Module):
         super(CapsuleLoss, self).__init__()
         self.reconstruction_loss = nn.MSELoss(size_average=False)
         self.loss = nn.MSELoss(size_average=False) #args.loss
-        #self.use_recon = args.use_recon
-        #self.no_labels = args.no_labels
         self.args = args
 
     @staticmethod

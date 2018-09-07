@@ -111,7 +111,7 @@ translating = False
 mouse_pos_x = 0
 mouse_pos_y = 0
 make_samples_count = 0
-eye_distance = 0.2
+eye_distance = 0.3
 
 def key_callback(window, key, scancode, action, mode):
     if key == glfw.KEY_F12 and action == glfw.PRESS:
@@ -284,7 +284,8 @@ def main():
             trans = pyrr.Matrix44.identity(float)
             trans[3,0] = random.random()*1.0 - 0.5
             trans[3,1] = random.random()*0.7 - 0.35
-            trans[3,2] = 0.2
+            trans[3,2] = random.random()*0.2
+            trans[3,3] = 1./(0.7 + random.random() * 0.3) # scale
 
             eye_angle = eye_distance/focus_distance
 
@@ -292,7 +293,7 @@ def main():
             
             mat = trans*rot*rabbit_transform
             
-            stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
+            stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3]) + '_' + str(trans[3,3])
             #stereo_filename1 = str(dx) + '_' + str(dy) + '_' + str(dz) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3])
 
             right_eye_transform = pyrr.Matrix44.from_y_rotation(eye_angle/2)
@@ -305,7 +306,7 @@ def main():
             right_array = snapToNumpy()
             #render_to_jpg(stereo_filename+'_r.png')
 
-            #time.sleep(0.2)
+            #time.sleep(0.5)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             glUniformMatrix4fv(transform_loc, 1, GL_FALSE, left_eye_transform*mat)
@@ -323,7 +324,7 @@ def main():
             save_to_jpg(stereo_filename+'.png', array)
             #render_to_jpg(stereo_filename+'_l.png')
 
-            #time.sleep(0.5)
+            #time.sleep(2.0)
             
             make_samples_count -= 1
            

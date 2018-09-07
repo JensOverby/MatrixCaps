@@ -7,6 +7,7 @@ The Capsules layer.
 # TODO: use less permute() and contiguous()
 
 import model.capsules as mcaps
+import model.util as util
 
 import torch
 from torch.autograd import Variable
@@ -34,26 +35,6 @@ def reset_meters():
     meter_loss.reset()
     #confusion_meter.reset()
 
-def gaussian(ins, is_training, mean, stddev):
-    if is_training:
-        noise = Variable(ins.data.new(ins.size()).normal_(mean, stddev))
-        return ins + noise
-    return ins
-
-class MyImageFolder(datasets.ImageFolder):
-    def __getitem__(self, index):
-        path, target = self.samples[index]
-        sample = self.loader(path)
-        if self.transform is not None:
-            sample = self.transform(sample)
-        data = path.split('/')
-        data = data[-1].split('_')
-        data[-1] = data[-1].split('.p')[0]
-        data = [float(i) for i in data]
-        
-        labels = np.asarray(data)
-        
-        return sample, labels
 
 if __name__ == '__main__':
     torch.cuda.empty_cache()
@@ -74,6 +55,8 @@ if __name__ == '__main__':
                         help='Disable CUDA')
     parser.add_argument('--disable-recon', action='store_true',
                         help='Disable Reconstruction')
+    parser.add_argument('--bright-contrast', action='store_true',
+                        help='Add random brightness and contrast')
     parser.add_argument('--disable-encoder', action='store_true',
                         help='Disable Encoding')
     parser.add_argument('--load-loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
@@ -90,8 +73,9 @@ if __name__ == '__main__':
                         help='loss to use: cross_entropy_loss, margin_loss, spread_loss')
     parser.add_argument('--routing', type=str, default='EM_routing', metavar='N',
                         help='routing to use: angle_routing, EM_routing')
-    parser.add_argument('--recon-factor', type=float, default=0.0001, metavar='N',
+    parser.add_argument('--recon-factor', type=float, default=1e-6, metavar='N',
                         help='use reconstruction loss or not')
+    parser.add_argument('--max-lambda',help='max lambda value',type=float,default=0.4,metavar='N')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N',
                         help='num of workers to fetch data')
     args = parser.parse_args()
@@ -147,15 +131,15 @@ if __name__ == '__main__':
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
     if not args.lr:
-        learning_rate = 1e-5
+        learning_rate = 1e-2
     else:
         learning_rate = args.lr
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True) #, eps=1e-3)
-    #optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
+    #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, amsgrad=True) #, eps=1e-3)
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
     scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1, verbose=True)
 
-    train_dataset = MyImageFolder(root='../../data/dumps/', transform=transforms.ToTensor(),
+    train_dataset = util.MyImageFolder(root='../../data/dumps/', transform=transforms.ToTensor(),
                                   target_transform=transforms.ToTensor())
 
     # Data Loader (Input Pipeline)
@@ -181,10 +165,10 @@ if __name__ == '__main__':
         
         if args.pretrained == -1: # latest
             model_name = max(glob.iglob("./weights/em_capsules/model*.pth"),key=os.path.getctime)
-            optim_name = max(glob.iglob("./weights/em_capsules/optim*.pth"),key=os.path.getctime)
         else:
             model_name = "./weights/em_capsules/model_{}.pth".format(args.pretrained)
-            optim_name = "./weights/em_capsules/optim.pth"
+            
+        optim_name = "./weights/em_capsules/optim.pth"
         
         model.load_state_dict( torch.load(model_name) )
         if os.path.isfile(optim_name):
@@ -193,14 +177,14 @@ if __name__ == '__main__':
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.lr
 
-        # Temporary PyTorch bugfix: https://github.com/pytorch/pytorch/issues/2830
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if torch.is_tensor(v):
-                    state[k] = v.cuda()
+            # Temporary PyTorch bugfix: https://github.com/pytorch/pytorch/issues/2830
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if torch.is_tensor(v):
+                        state[k] = v.cuda()
         
         m = 0.8
-        lambda_ = 1.0
+        lambda_ = args.max_lambda
 
     #old_backup = 0
     #old_counter = 0
@@ -224,7 +208,7 @@ if __name__ == '__main__':
             with tqdm(total=steps) as pbar:
                 for data in train_loader:
                     step += 1
-                    if lambda_ < 1:
+                    if lambda_ < args.max_lambda:
                         lambda_ += 2e-1 / steps
                     if m < 0.9:
                         m += 2e-1 / steps
@@ -235,14 +219,20 @@ if __name__ == '__main__':
                     #gaussian_noise = torch.randn(labels.shape[0], labels.shape[1], labels.shape[2]) * 0.01
                     #labels = labels.float()# + gaussian_noise
 
-                    labels = torch.cat((labels.float(),torch.zeros(labels.shape[0],2)),1)
+                    #labels = torch.cat((labels.float(),torch.zeros(labels.shape[0],2)),1)
+                    labels = util.matMinRep_from_qvec(labels.float())
+                    
                     #imgs = imgs[:,0,:,:].unsqueeze(1) # use only red channel
                     
-                    # Split in 2 stereo images,
-                    # and merge to 2 channel, red only
-                    left = imgs[:,:,:,:int(imgs.shape[-1]/2)]
-                    right = imgs[:,:,:,int(imgs.shape[-1]/2):]
-                    imgs_two_channel_red = np.stack([left[:,0,:,:],right[:,0,:,:]], axis=1)
+                    imgs_two_channel_red = util.split_in_channels(imgs)
+
+                    if args.bright_contrast:
+                        for i in range(imgs_two_channel_red.shape[0]):
+                            bright = random.random()*0.3 - 0.15
+                            cont = 1. / (random.random()*1.5 + 0.5)
+                            for j in range(imgs_two_channel_red.shape[1]):
+                                imgs_two_channel_red[i,j,:,:] = util.applyBrightnessAndContrast(imgs_two_channel_red[i,j,:,:], bright, cont)
+
                     
                     #ground_truth_logger.log(imgs_two_channel_red[:,0,:,:].squeeze())
                     #reconstruction_logger.log(imgs_two_channel_red[:,1,:,:].squeeze())
@@ -254,40 +244,43 @@ if __name__ == '__main__':
                         imgs = imgs.cuda()
                         labels = labels.cuda()
 
-                    _labels = None #labels
+                    _labels = labels
+                    #_labels[(_labels[:,6] < 0).nonzero(),3:] *= -1
+                    
                     out_labels, recon = model(imgs, lambda_, _labels)
 
 
                     #print("labels: ",[i.item() for i in labels[0][0:7]],",",[i.item() for i in out_labels[0]])
 
+                    imgs_sliced = imgs[:,[0,3],...]
                     if not args.disable_recon:
-                        recon = recon.view_as(imgs)
+                        recon = recon.view_as(imgs_sliced)
                     #out_labels = out_labels[:,:9]
                     
                     # Disable 3rd axis from rotation matrices
                     #labels.view(labels.shape[0],4,4)[:,2,0:3] = out_labels.data.view(labels.shape[0],4,4)[:,2,0:3]
                     
-                    loss = capsule_loss(imgs, out_labels, _labels, recon)
+                    #loss = capsule_loss(imgs, out_labels[:,:_labels.shape[1]], _labels, recon)
+                    loss = capsule_loss(imgs_sliced, out_labels.view(_labels.shape[0], -1)[:,:_labels.shape[1]], _labels, recon)
 
                     loss.backward()
                     
-                    for q in range(len(model.primary_caps.capsules_activation)):
-                        if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
-                            print("isnan")
-                        if mcaps.isnan(model.primary_caps.capsules_pose[q].weight):
-                            print("isnan")
-                    if mcaps.isnan(model.conv1.weight):
+                    if util.isnan(model.primary_caps.capsules_pose.weight):
                         print("isnan")
-                    if mcaps.isnan(model.conv2.weight):
+                    if util.isnan(model.primary_caps.capsules_activation.weight):
                         print("isnan")
-                    if mcaps.isnan(model.convcaps1.W):
+                    if util.isnan(model.conv1.weight):
                         print("isnan")
-                    if mcaps.isnan(model.convcaps2.W):
+                    if util.isnan(model.conv2.weight):
+                        print("isnan")
+                    if util.isnan(model.convcaps1.W):
+                        print("isnan")
+                    if util.isnan(model.convcaps2.W):
                         print("isnan")
 
                     nan = False
                     if not args.disable_encoder:
-                        if mcaps.isnan(model.convcaps1.W.grad) or mcaps.isnan(model.convcaps1.beta_v.grad) or mcaps.isnan(model.convcaps1.beta_a.grad):
+                        if util.isnan(model.convcaps1.W.grad) or util.isnan(model.convcaps1.beta_v.grad) or util.isnan(model.convcaps1.beta_a.grad):
                             nan = True
                             #scheduler._reduce_lr(epoch)
                             print("nan nan nan nan nan nan nan!!!!!!!!!!!!!!!!!!!!!!!")
@@ -303,23 +296,22 @@ if __name__ == '__main__':
                     if not nan:
                         optimizer.step()
 
-                        if mcaps.isnan(model.convcaps1.W):
+                        if util.isnan(model.convcaps1.W):
                             print("isnan")
                             nan = True
-                        if mcaps.isnan(model.convcaps2.W):
+                        if util.isnan(model.convcaps2.W):
                             print("isnan")
                             nan = True
-                        for q in range(len(model.primary_caps.capsules_activation)):
-                            if mcaps.isnan(model.primary_caps.capsules_activation[q].weight):
-                                print("isnan")
-                                nan = True
-                            if mcaps.isnan(model.primary_caps.capsules_pose[q].weight):
-                                print("isnan")
-                                nan = True
-                        if mcaps.isnan(model.conv1.weight):
+                        if util.isnan(model.primary_caps.capsules_pose.weight):
                             print("isnan")
                             nan = True
-                        if mcaps.isnan(model.conv2.weight):
+                        if util.isnan(model.primary_caps.capsules_activation.weight):
+                            print("isnan")
+                            nan = True
+                        if util.isnan(model.conv1.weight):
+                            print("isnan")
+                            nan = True
+                        if util.isnan(model.conv2.weight):
                             print("isnan")
                             nan = True
 
@@ -351,10 +343,10 @@ if __name__ == '__main__':
 
                 if not args.disable_recon:
                     ground_truth_logger_left.log(
-                        make_grid(imgs.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
+                        make_grid(imgs_sliced.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
                                   range=(0, 1)).cpu().numpy())
                     ground_truth_logger_right.log(
-                        make_grid(imgs.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
+                        make_grid(imgs_sliced.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
                                   range=(0, 1)).cpu().numpy())
     
                     reconstruction_logger_left.log(
@@ -378,7 +370,11 @@ if __name__ == '__main__':
 
                 print("Epoch{} Train loss:{:4}".format(epoch, loss))
                 scheduler.step(loss)
+
+                model.cpu()
                 torch.save(model.state_dict(), "./weights/em_capsules/model_{}.pth".format(epoch))
+                if args.use_cuda:
+                    model.cuda()
                 torch.save(optimizer.state_dict(), "./weights/em_capsules/optim.pth".format(epoch))
 
                 reset_meters()
