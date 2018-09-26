@@ -111,7 +111,7 @@ translating = False
 mouse_pos_x = 0
 mouse_pos_y = 0
 make_samples_count = 0
-eye_distance = 0.3
+eye_distance = 0.5
 
 def key_callback(window, key, scancode, action, mode):
     if key == glfw.KEY_F12 and action == glfw.PRESS:
