@@ -15,10 +15,6 @@ def print_mat(x):
 
     plt.show()
 
-def isnan(x):
-    kaj = (x != x).sum()
-    return (kaj != 0)
-
 def matMinRep_from_qvec(q):
 
     # http://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToMatrix/index.htm
