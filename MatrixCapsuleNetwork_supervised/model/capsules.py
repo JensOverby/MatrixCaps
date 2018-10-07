@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import math
-#from . import util
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
@@ -72,12 +71,11 @@ class ConvCaps(nn.Module):
         self.transform_share = transform_share
         self.beta_v = nn.Parameter(torch.randn(self.C).view(1,self.C,1,1))
         self.beta_a = nn.Parameter(torch.randn(self.C).view(1,self.C,1))
-        
-        if not transform_share:
-            self.W = nn.Parameter(torch.randn(B, kernel, kernel, C,
-                                              h, h))  # B,K,K,C,4,4
-        else:
+
+        if transform_share:
             self.W = nn.Parameter(torch.randn(B, C, h, h))  # B,C,4,4
+        else:
+            self.W = nn.Parameter(torch.randn(B, kernel, kernel, C, h, h))  # B,K,K,C,4,4
 
         self.iteration = iteration
 
@@ -95,19 +93,8 @@ class ConvCaps(nn.Module):
             self.ln_2pi = self.ln_2pi.cpu()
         super()._apply(fn)
         
-    def coordinate_addition_new(self, votes):
-        coor = torch.arange(float(self.width_in)) / self.width_in
-        coor_h = torch.zeros(1, 1, 1, 1, 1, self.width_in, 1, self.h, self.h)
-        coor_w = torch.zeros(1, 1, 1, 1, 1, 1, self.width_in, self.h, self.h)
-        coor_h[0,0,0,0,0,:,0,0,0] = coor
-        coor_w[0,0,0,0,0,0,:,0,1] = coor
-        print (coor_h + coor_w)
-        #votes = votes + coor_h + coor_w
-        #return votes
-        
     def create_coordinate_offset(self):
         dist = torch.arange(float(self.K)) / self.K
-        #coor_h = torch.zeros(1, 1, self.K, self.K, 1, 1, 1, self.h, self.h).cuda()
         off = torch.zeros(self.K, self.K, self.h, self.h)
         off[:,:,0,3] = dist
         off[:,:,1,3] = dist.view(3,1)
@@ -115,25 +102,8 @@ class ConvCaps(nn.Module):
             off = off.cuda()
         self.coord_offset = Variable(off).view(1, 1, self.K, self.K, 1, 1, 1, self.h, self.h)
         self.initial = False
-
-    """   
-    def create_coordinate_offset(self, votes):
-        add = []
-        for j in range(self.width_in):
-            for i in range(self.width_in):
-                add.append([i / self.width_in, j / self.width_in])
         
-        if self.W.is_cuda:
-            add = torch.Tensor(add).cuda()
-        else:
-            add = torch.Tensor(add)
-        self.coord_offset = Variable(add).view(1, 1, self.K, self.K, 1, 1, 1, 2)
-        self.coord_offset = self.coord_offset.expand(self.b, self.B, self.K, self.K, self.C, 1, 1, 2).contiguous()
-        self.initial = False
-
         #votes[:, :, :, :, :, :, :, :2, -1] = votes[:, :, :, :, :, :, :, :2, -1] + add
-        #return votes
-    """
 
     def EM_routing(self, lambda_, a_, V):
         # routing coefficient
@@ -147,15 +117,21 @@ class ConvCaps(nn.Module):
             R = (R * a_).unsqueeze(-1)
             sum_R = R.sum(1)
             mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
-            sigma_square = ((R * (V - mu) ** 2).sum(1) / sum_R).unsqueeze(1)
+            V_minus_mu_sqr = (V - mu) ** 2
+            sigma_square = ((R * V_minus_mu_sqr).sum(1) / sum_R).unsqueeze(1)
 
-            cost = (self.beta_v + torch.log(sigma_square.sqrt().view(self.b,self.C,-1,self.hh)+self.eps)) * sum_R.view(self.b, self.C,-1,1)
+            """
+            beta_v: Bias for scaling
+            beta_a: Bias for offsetting
+            """
+            log_sigma = torch.log(sigma_square.sqrt()+self.eps)
+            cost = (self.beta_v + log_sigma.view(self.b,self.C,-1,self.hh)) * sum_R.view(self.b, self.C,-1,1)
             a = torch.sigmoid(lambda_ * (self.beta_a - cost.sum(-1)))
             a = a.view(self.b, self.Cww)
 
             # E-step
             if i != self.iteration - 1:
-                ln_p_j_h = -(V.detach() - mu.detach())**2 / (2 * sigma_square.detach()) - torch.log(sigma_square.detach().sqrt()) - 0.5*self.ln_2pi
+                ln_p_j_h = -V_minus_mu_sqr.detach() / (2 * sigma_square.detach()) - log_sigma.detach() - 0.5*self.ln_2pi
                 p = torch.exp(ln_p_j_h)
                 ap = a.detach()[:,None,:] * p.sum(-1)
                 R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + self.eps) + self.eps, requires_grad=False)
@@ -174,9 +150,6 @@ class ConvCaps(nn.Module):
             if self.K == 0:
                 self.K = self.width_in  # class Capsules' kernel = width_in
         self.Bkk = self.K * self.K * self.B
-        
-        
-        
         
         if self.transform_share:
             W = self.W.view(self.B, 1, 1, self.C, self.h, self.h).expand(self.B, self.K, self.K, self.C, self.h, self.h).contiguous()
@@ -201,9 +174,6 @@ class ConvCaps(nn.Module):
             if (self.initial):
                 self.create_coordinate_offset()
             votes = votes + self.coord_offset
-            #votes[:, :, :, :, :, :, :, :2, -1] = votes[:, :, :, :, :, :, :, :2, -1] + self.coord_offset
-
-            #votes = self.coordinate_addition(votes)
             activations_ = activations.view(self.b, -1).unsqueeze(-1).repeat(1, 1, self.Cww)
         else:
             act_list = []
@@ -239,6 +209,22 @@ class CapsNet(nn.Module):
         self.convcaps2 = ConvCaps(args, C, D, kernel=3, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
         self.classcaps = ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r, coordinate_add=True, transform_share=True)
 
+        
+        self.coord_add_encoder = nn.Sequential(
+            nn.Linear(3, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 3),
+            nn.Tanh()
+        )
+        """
+        self.coord_add_encoder = nn.Sequential(
+            nn.Linear(16, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 16),
+            nn.Tanh()
+        )
+        """
+
         lin1 = nn.Linear(h*h * args.num_classes, 512)
         #lin1 = nn.Linear(3*4 * args.num_classes, 512)
         lin1.weight.data *= 50.0 # inialize weights strongest here!
@@ -263,7 +249,6 @@ class CapsNet(nn.Module):
 
         self.args = args
 
-        
     def forward(self, lambda_, x, labels=None):  # b,1,28,28
         if not self.args.disable_encoder:
             x = F.relu(self.bn1(self.conv1(x)))  # b,32,12,12
@@ -280,6 +265,10 @@ class CapsNet(nn.Module):
             # Temporary when batch size = 1
             if len(p.shape) == 1:
                 p = p.unsqueeze(0)
+                
+            xyz = p[:, (3,7,11)]
+            xyz = self.coord_add_encoder(xyz)
+            p[:, (3,7,11)] = xyz * 1.0
         else:
             p = labels
 

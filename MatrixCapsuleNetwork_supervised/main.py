@@ -28,7 +28,7 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
     
     parser = argparse.ArgumentParser(description='CapsNet')
-    parser.add_argument('--batch-size', type=int, default=24)
+    parser.add_argument('--batch-size', type=int, default=20)
     parser.add_argument('--test-batch-size', type=int, default=32)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--lr',help='learning rate',type=float,nargs='?',const=0,default=None,metavar='PERIOD')    
@@ -49,6 +49,7 @@ if __name__ == '__main__':
     parser.add_argument('--recon-factor', type=float, default=1e-6, metavar='N', help='use reconstruction loss or not')
     parser.add_argument('--max-lambda',help='max lambda value',type=float,default=1.,metavar='N')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
+    parser.add_argument('--patience', type=int, default=5, metavar='N', help='Scheduler patience')
     args = parser.parse_args()
     args.use_cuda = not args.disable_cuda and torch.cuda.is_available()
 
@@ -82,7 +83,7 @@ if __name__ == '__main__':
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-2, amsgrad=True)
     #optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, verbose=True)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=args.patience, verbose=True)
 
 
     """
@@ -113,7 +114,8 @@ if __name__ == '__main__':
                     if torch.is_tensor(v):
                         state[k] = v.cuda()
         
-        lambda_ = torch.tensor([args.max_lambda])
+        if args.use_cuda:
+            lambda_ = torch.tensor([args.max_lambda]).cuda()
 
 
     """
@@ -213,6 +215,11 @@ if __name__ == '__main__':
                 if not args.disable_recon:
                     recon = recon.view_as(imgs_sliced)
                 
+                val = out_labels[:,:labels.shape[1]].view(labels.shape[0], 4, 3)[:,:3,2].data
+                ref = labels.view(labels.shape[0], 4, 3)[:,:3,2]
+                pos_error = val - ref
+                labels.view(labels.shape[0], 4, 3)[:,:3,2] = ref - 3*pos_error
+                
                 loss = capsule_loss(imgs_sliced, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
 
                 loss.backward()
@@ -227,9 +234,9 @@ if __name__ == '__main__':
                 """
                 meter_loss.add(loss.data)
                 if not args.disable_recon:
-                    pbar.set_postfix(loss=meter_loss.value()[0].item(), lambda_=lambda_, recon_=recon.sum().item())
+                    pbar.set_postfix(loss=meter_loss.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
                 else:
-                    pbar.set_postfix(loss=meter_loss.value()[0].item(), lambda_=lambda_)
+                    pbar.set_postfix(loss=meter_loss.value()[0].item(), lambda_=lambda_.item())
                 pbar.update()
 
             
@@ -252,15 +259,16 @@ if __name__ == '__main__':
                               range=(0, 1)).cpu().numpy())
 
             loss = meter_loss.value()[0]
-            train_loss_logger.log(epoch + epoch_offset, loss)
+            train_loss_logger.log(epoch + epoch_offset, loss.item())
             
             with open("loss.log", "a") as myfile:
-                myfile.write(str(loss.data.item())+'\n')
+                myfile.write(str(loss.item())+'\n')
 
             print("Epoch{} Train loss:{:4}".format(epoch, loss))
 
 
             """
+            Scheduler
             """
             scheduler.step(loss)
 
