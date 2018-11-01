@@ -218,7 +218,7 @@ for i in tqdm(range(nb_iters)):
 
     # check for convergence
     diff = prev_cost - cost
-    if torch.abs(diff).data[0] < thresh:
+    if torch.abs(diff).data.item() < thresh:
         break
     prev_cost = cost
 

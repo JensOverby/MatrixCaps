@@ -1,20 +1,12 @@
 import torch
-import torch.nn.functional as F
 import numpy as np
 from torch.autograd import Variable
-from scipy.stats import multivariate_normal
-np.cat = np.concatenate
-
+import math
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
-import seaborn as sns
-
-from tqdm import tqdm_notebook as tqdm
 from torch.distributions import Normal
-
-
-torch.__version__
+import torch.nn as nn
 
 def sample(mu, var, nb_samples=500):
     """
@@ -31,31 +23,11 @@ def sample(mu, var, nb_samples=500):
         ]
     return torch.cat(out, dim=0)
 
-# generate some clusters
-cluster1 = sample(
-    torch.Tensor([2.5, 2.5]),
-    torch.Tensor([1.2, .8])
-)
-
-cluster2 = sample(
-    torch.Tensor([7.5, 7.5]),
-    torch.Tensor([.75, .5])
-)
-
-cluster3 = sample(
-    torch.Tensor([8, 1.5]),
-    torch.Tensor([.6, .8])
-)
-
 def plot_2d_sample(sample):
     sample_np = sample.numpy()
     x = sample_np[:, 0]
     y = sample_np[:, 1]
     plt.scatter(x, y)
-    
-# create the dummy dataset, by combining the clusters.
-X = torch.cat([cluster1, cluster2, cluster3])
-plot_2d_sample(X)
 
 def get_k_likelihoods(X, mu, var):
     """
@@ -102,19 +74,14 @@ def plotXYZ(XYZ):
 #     plt.savefig('fig_{}.png'.format(i), dpi=400, bbox_inches='tight')
     plt.show()
 
-#>>> points.shape
-#torch.Size([10000, 2])
-#>>> P.shape
-#torch.Size([3, 10000])    
-
-def get_density(mu, var, pi, N=50, X_range=(0, 5), Y_range=(0, 5)):
+def get_density(mu, var, N=50, X_range=(0, 5), Y_range=(0, 5)):
     """ Get the mesh to compute the density on. """
     X = np.linspace(*X_range, N)
     Y = np.linspace(*Y_range, N)
     X, Y = np.meshgrid(X, Y)
     
     # get the design matrix
-    points = np.cat([X.reshape(-1, 1), Y.reshape(-1, 1)], axis=1)
+    points = np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1)], axis=1)
     points = Variable(torch.from_numpy(points).float())
     
     # compute the densities under each mixture
@@ -125,11 +92,10 @@ def get_density(mu, var, pi, N=50, X_range=(0, 5), Y_range=(0, 5)):
     
     return X, Y, Z
 
-def plot_density(X, Y, Z, i=0):
+def plot_density(X, Y, Z):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.gca(projection='3d')
-    ax.plot_surface(X, Y, Z, rstride=3, cstride=3, linewidth=1, antialiased=True,
-                    cmap=cm.inferno)
+    ax.plot_surface(X, Y, Z, rstride=3, cstride=3, linewidth=1, antialiased=True, cmap=cm.inferno)
     cset = ax.contourf(X, Y, Z, zdir='z', offset=-0.15, cmap=cm.inferno)
 
     # adjust the limits, ticks and view angle
@@ -139,155 +105,138 @@ def plot_density(X, Y, Z, i=0):
 #     plt.savefig('fig_{}.png'.format(i), dpi=400, bbox_inches='tight')
     plt.show()
 
-def EM_routing(R, V):
-    eps = 1e-6
-    iteration = 10
+
+# generate some clusters
+cluster1 = sample(
+    torch.Tensor([2.5, 2.5]),
+    torch.Tensor([1.2, .8])
+)
+
+cluster2 = sample(
+    torch.Tensor([7.5, 7.5]),
+    torch.Tensor([.75, .5])
+)
+
+cluster3 = sample(
+    torch.Tensor([8, 1.5]),
+    torch.Tensor([.6, .8])
+)
+
+clusterNoise = sample(
+    torch.Tensor([10, 10]),
+    torch.Tensor([.5, .5]), nb_samples=100
+)
+
+cluster1 = torch.cat([cluster1, clusterNoise], dim=0)
+cluster2 = torch.cat([cluster2, clusterNoise], dim=0)
+cluster3 = torch.cat([cluster3, clusterNoise], dim=0)
+
+X = torch.stack([cluster1, cluster2, cluster3], dim=1)
+plot_2d_sample(X.view(-1,2))
+
+
+class myModel(nn.Module):
+
+    def __init__(self):
+        super(myModel, self).__init__()    
+        
+        self.b = 1
+        self.Bkk = 600
+        self.C = 3
+        self.Cww = 3
+        self.hh = 2
+        self.iteration = 3
+        self.eps = 1e-10
+        self.ln_2pi = torch.FloatTensor(1).fill_(math.log(2*math.pi))
+        self.beta_v = nn.Parameter(torch.randn(self.C).view(1,self.C,1,1))
+        self.beta_a = nn.Parameter(torch.randn(self.C).view(1,self.C,1))
+
+        #self.beta_v = nn.Parameter(torch.zeros(self.C).view(1,self.C,1,1))
+        #self.beta_v = nn.Parameter((torch.FloatTensor(self.C) + 0.5 + 0.5*self.ln_2pi).view(1,self.C,1,1))
+        #self.beta_a = nn.Parameter(torch.zeros(self.C).view(1,self.C,1))
+        
+    def EM_routing_new(self, lambda_, a_, V):
+        # routing coefficient
+        R = Variable(torch.ones([self.b, self.Bkk, self.Cww]), requires_grad=False) / self.C
     
-    for i in range(iteration):
-        # M-step
-        #R = (R * a_).unsqueeze(-1)
-        R = R.unsqueeze(-1)
-        sum_R = R.sum(1)
-        mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
-        sigma_square = ((R * (V - mu) ** 2).sum(1) / sum_R).unsqueeze(1)
-
-        #cost = (self.beta_v.view(kaj) + torch.log(sigma_square.sqrt().view(b_C_w)+self.eps)) * sum_R.view(b_C_w)
-        #a = torch.sigmoid(lambda_ * (self.beta_a.view(aag) - cost.sum(-1)))
-        #a = a.view(self.b, -1)
-
-        # E-step
-        if i != iteration - 1:
-            normal = Normal(mu, sigma_square.sqrt())
-            p = torch.exp(normal.log_prob(V+eps))
-            ap = p.prod(-1)
-
-            plot_density(*get_density(mu.squeeze(1), sigma_square.squeeze(1), pi, N=100, X_range=(-2, 12), Y_range=(-2, 12)), i=i)
-            #XYZ = torch.stack([V[:,:,0],V[:,:,1],ap], dim=-1)
-            #plotXYZ(XYZ)
-            
-            #ap = a__.unsqueeze(1) * p.sum(-1)
-            R = Variable(ap / ap.sum(0, keepdim=True), requires_grad=False) + eps
-            
-            #R = Variable(ap / ap.sum(-1, keepdim=True), requires_grad=False) + eps
-
-    return mu
-
-
-# training loop
-k = 3
-d = 2
-nb_iters = 1000
-
-data = Variable(X)
-
-# tile the design matrix `K` times on the batch dimension 
-X = data.unsqueeze(0).repeat(k, 1, 1)
-
-
-"""
-Randomly initialize the parameters for `k` gaussians.
-
-data: design matrix (examples, features)
-k: number of gaussians
-var: initial variance
-"""
-
-# choose k points from data to initialize means
-var = 1
-m = data.size(0)
-idxs = Variable(torch.from_numpy(
-    np.random.choice(m, k, replace=False)))
-mu = data[idxs].unsqueeze(1)
-
-# uniform sampling for means and variances
-var = Variable(torch.Tensor(k, d).fill_(var)).unsqueeze(1)
-
-# equal priors
-pi = Variable(torch.Tensor(k).fill_(1)) / k
-
-
-
-
-
-print(mu.size())
-
-prev_cost = float('inf')
-thresh = 1e-4
-eps = 1e-6
-for i in tqdm(range(nb_iters)):
-
-    # E-STEP
-
-    # get the likelihoods p(x|z) under the parameters
-    #p = get_k_likelihoods(data, mu, var)
-
-    normal = Normal(mu, var.sqrt())
-    P = torch.exp(normal.log_prob(X))
-    P = P.prod(-1)
+        for i in range(self.iteration):
+            # M-step
+            R = (R * a_).unsqueeze(-1)
+            sum_R = R.sum(1)
+            mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
+            V_minus_mu_sqr = (V - mu) ** 2
+            sigma_square = ((R * V_minus_mu_sqr).sum(1) / sum_R).unsqueeze(1)
     
-    #XYZ = torch.stack([X[:,:,0],X[:,:,1],P], dim=-1)
-    #plotXYZ(XYZ)
-
-    # plot!
-    #x,y,z = getXYZ(data, P)
-    #plot_density(x,y,z)
-    plot_density(*get_density(mu.squeeze(1), var.squeeze(1), pi, N=100, X_range=(-2, 12), Y_range=(-2, 12)), i=i)
+            debug = False
+            if debug:
+                plot_density(*get_density(mu.squeeze(), sigma_square.squeeze(), N=100, X_range=(-2, 12), Y_range=(-2, 12)))
     
-    # compute the "responsibilities" p(z|x)
-    # P: the relative likelihood of each data point under each gaussian (K, examples)
-    P_sum = torch.sum(P, dim=0, keepdim=True)
+            """
+            beta_v: Bias for scaling
+            beta_a: Bias for offsetting
+            """
+            log_sigma = torch.log(sigma_square.sqrt()+self.eps)
+            #cost = (self.beta_v + log_sigma.view(self.b,self.C,-1,self.hh) + 0.5 + 0.5*self.ln_2pi) * sum_R.view(self.b, self.C,-1,1)
+            cost = (self.beta_v + log_sigma.view(self.b,self.C,-1,self.hh)) * sum_R.view(self.b, self.C,-1,1)
+            #a = torch.softmax(lambda_ * (self.beta_a - cost.sum(-1)), dim=1)
+            a = torch.sigmoid(lambda_ * (self.beta_a - cost.sum(-1)))
+            a = a.view(self.b, self.Cww)
 
-    # p(z|x): (K, examples)
-    gamma = P / (P_sum+eps)
-
-
-    EM_routing(gamma, X)
+            # E-step
+            if i != self.iteration - 1:
+                ln_p_j_h = -V_minus_mu_sqr / (2 * sigma_square) - log_sigma - 0.5*self.ln_2pi
+                p = torch.exp(ln_p_j_h)
+                ap = a[:,None,:] * p.sum(-1)
+                #ap = R.data.squeeze(-1) * p.sum(-1)
+                #R = ap / (torch.sum(ap, 2, keepdim=True) + self.eps) + self.eps
+                R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + self.eps) + self.eps, requires_grad=False)
     
-    # compute the cost
-
-    """
-    Get the log-likelihood of the data points under the given distribution.
-    P: likelihoods / densities under the distributions. (k, examples)
-    pi: priors (K)
-    """
+        return a, mu
     
-    # get weight probability of each point under each k
-    sum_over_k = torch.sum(pi.unsqueeze(1) * P, dim=0)
+    def forward(self, x, a, lambda_):
+        a, p = self.EM_routing_new(lambda_, a, x)
+        return p, a
+        
+
     
-    # take log probability over each example `m`
-    sum_over_m = torch.sum(torch.log(sum_over_k + eps))
+model = myModel()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01, amsgrad=True)
+loss = nn.MSELoss(reduction='sum')
+
+votes = X.view(1,model.Bkk,model.Cww,model.hh)
+votes = Variable(votes)
+labels = torch.tensor([[0.4, 0.5, 0.7]])
+#labels = torch.tensor([[[[2.4378, 2.5000],
+#                         [9.0173, 8.9117],
+#                         [8.1716, 1.7770]]]])
+
+labels = Variable(labels)
+
+a = Variable(torch.ones([model.b, model.Bkk, model.Cww]), requires_grad=False)
+
+lambda_ = 0.00001
+delta = 0.
+
+for epoch in range(20000):
+
+    optimizer.zero_grad()
+    #a = a.detach()
+    votes_, a_ = model(votes, a, lambda_)
+
+    main_loss = loss(a_.view(-1), labels.view(-1))
+    main_loss.backward()
+    optimizer.step()
+
+    print("epoch",epoch,"loss",main_loss, a_)
     
-    # divide by number of training examples
-    cost = -sum_over_m / P.size(1)
+    #if epoch < 10000:
+    #    delta = 0.0000001
+    #else:
+    #    delta = 0.000005
+        #delta += 0.0000000025
 
-    # check for convergence
-    diff = prev_cost - cost
-    if torch.abs(diff).data[0] < thresh:
-        break
-    prev_cost = cost
+    #lambda_ += delta
 
+    lambda_ += 0.00005
 
-
-    # M-STEP
-
-    # re-compute parameters
-
-    # compute `N_k` the proxy "number of points" assigned to each distribution.
-    N_k = torch.sum(gamma, dim=1) + eps # (K)
-    N_k = N_k.view(k, 1, 1)
-
-
-    # get the means by taking the weighted combination of points
-    mu = (gamma.unsqueeze(2) * X).sum(1, keepdim=True)
-    #mu = gamma.unsqueeze(1) @ X # (K, 1, features)
-    mu = mu / N_k
-    
-    # compute the diagonal covar. matrix, by taking a weighted combination of
-    # the each point's square distance from the mean
-    A = X - mu
-    var = (gamma.unsqueeze(2) * (A ** 2)).sum(1, keepdim=True)
-    #var = gamma.unsqueeze(1) @ (A ** 2) # (K, 1, features)
-    var = var / N_k
-
-    # recompute the mixing probabilities
-    pi = N_k / N_k.sum()
+#EM_routing(self, 1.0, votes)

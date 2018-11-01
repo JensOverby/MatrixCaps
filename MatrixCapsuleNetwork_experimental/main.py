@@ -58,7 +58,7 @@ if __name__ == '__main__':
     """
     Setup model, load it to CUDA and make JIT compilation
     """
-    A, AA, B, C, D, E, r = 32, 64, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
+    A, AA, B, C, D, E, r = 32, 32, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
     model = mcaps.CapsNet(args, A, AA, B, C, D, E, r, h=4)
     lambda_ = torch.tensor([1e-3])
 
@@ -158,6 +158,7 @@ if __name__ == '__main__':
     """
     Training Loop
     """
+    dae_loss = 0
     for epoch in range(args.num_epochs):
 
         # Train
@@ -185,9 +186,17 @@ if __name__ == '__main__':
 
                 """
                 Prepare input
-                """                
-                #imgs = imgs[:,0,:,:].unsqueeze(1) # use only red channel
-                imgs_two_channel_red = util.split_in_channels(imgs)
+                """
+                left = imgs[:,[0,2],:,:int(imgs.shape[-1]/2)]
+                right = imgs[:,[0,2],:,int(imgs.shape[-1]/2):]
+                imgs = torch.stack([left[:,:,:,2:97],right[:,:,:,2:97]], dim=3).view(imgs.shape[0],2,100, 190)
+                imgs_ref = torch.stack([left[:,0,:,2:97],right[:,1,:,2:97]], dim=1)
+                #imgs_stereo = np.stack([left[:,:,:,2:97],right[:,:,:,2:97]], axis=1)
+                
+                
+                
+                #imgs_two_channel_red = util.split_in_channels(imgs)
+                #imgs_two_color = imgs[:,[0,2],:,5:195]
 
                 if args.bright_contrast:
                     for i in range(imgs_two_channel_red.shape[0]):
@@ -201,10 +210,11 @@ if __name__ == '__main__':
                         imgs = imgs.cuda()
                         imgs_ref = imgs_ref.cuda()
                 else:
-                    imgs = imgs_ref = Variable(torch.from_numpy(imgs_two_channel_red))
+                    imgs = Variable(imgs)
+                    imgs_ref = Variable(imgs_ref)
                     if args.use_cuda:
                         imgs = imgs.cuda()
-                        imgs_ref = imgs
+                        imgs_ref = imgs_ref.cuda()
 
 
 
@@ -212,20 +222,24 @@ if __name__ == '__main__':
                 """
                 optimizer.zero_grad()
 
-                out_labels, recon, dae_loss = model(lambda_, imgs, labels)
+                #if not args.disable_dae:
+                #    out_labels, recon, dae_loss = model(lambda_, imgs, True)
+                #    dae_loss *= 1e-6
 
-                imgs_sliced = imgs_ref[:,[0,3],...]
+                out_labels, recon, dae_loss = model(lambda_, imgs, not args.disable_dae)
+
+                #imgs_sliced = imgs_ref[:,0,:,:]
                 if not args.disable_recon:
-                    recon = recon.view_as(imgs_sliced)
+                    recon = recon.view_as(imgs_ref)
                 
-                val = out_labels[:,:labels.shape[1]].view(labels.shape[0], 4, 3)[:,:3,2].data
-                ref = labels.view(labels.shape[0], 4, 3)[:,:3,2]
-                pos_error = val - ref
-                labels.view(labels.shape[0], 4, 3)[:,:3,2] = ref - 3*pos_error
+                #val = out_labels[:,:labels.shape[1]].view(labels.shape[0], 4, 3)[:,:3,2].data
+                #ref = labels.view(labels.shape[0], 4, 3)[:,:3,2]
+                #pos_error = val - ref
+                #labels.view(labels.shape[0], 4, 3)[:,:3,2] = ref - 3*pos_error
                 
-                caps_loss = capsule_loss(imgs_sliced, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
+                caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
 
-                dae_loss *= 1e-6
+                dae_loss *= 3e-7
                 loss = caps_loss + dae_loss
 
                 loss.backward()
@@ -258,19 +272,11 @@ if __name__ == '__main__':
             All train data processed: Do logging
             """
             if not args.disable_recon:
-                ground_truth_logger_left.log(
-                    make_grid(imgs_sliced.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
-                              range=(0, 1)).cpu().numpy())
-                ground_truth_logger_right.log(
-                    make_grid(imgs_sliced.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
-                              range=(0, 1)).cpu().numpy())
+                ground_truth_logger_left.log(make_grid(imgs_ref.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+                ground_truth_logger_right.log(make_grid(imgs_ref.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
 
-                reconstruction_logger_left.log(
-                    make_grid(recon.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
-                              range=(0, 1)).cpu().numpy())
-                reconstruction_logger_right.log(
-                    make_grid(recon.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True,
-                              range=(0, 1)).cpu().numpy())
+                reconstruction_logger_left.log(make_grid(recon.data[:,0,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+                reconstruction_logger_right.log(make_grid(recon.data[:,1,:,:].unsqueeze(1), nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
 
             loss = meter_loss.value()[0] # + meter_loss_dae.value()[0]
             train_loss_logger.log(epoch + epoch_offset, loss.item())

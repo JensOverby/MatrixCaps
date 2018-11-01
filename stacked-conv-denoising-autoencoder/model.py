@@ -3,8 +3,6 @@ from torch import nn
 from torch.autograd import Variable
 import torch.nn.functional as F
 
-
-
 class CDAutoEncoder(nn.Module):
     r"""
     Convolutional denoising autoencoder layer for stacked autoencoders.
@@ -42,45 +40,9 @@ class CDAutoEncoder(nn.Module):
         # Add noise, but use the original lossless input as the target.
         x_noisy = x * (Variable(x.data.new(x.size()).normal_(0, 0.1)) > -.1).type_as(x)
         y = self.forward_pass(x_noisy)
-        
-        
-        # test
-        #x = torch.tensor(torch.arange(16)).float().view(1,1,4,4)
-        #W = torch.tensor([0,1,1,0]).float().view(1,2,2,1)
-
-        width_in = x_noisy.size(2)
-        w = int((width_in - self.K) / self.st + 1)
-        poses = torch.stack([x_noisy[:,:,self.st * i:self.st * i + self.K, self.st * j:self.st * j + self.K] for i in range(w) for j in range(w)], dim=-1)
-        poses = poses[:,None,:,:,:,:,None,None]
-        W_hat = self.forward_pass[0].weight[None,:,:,:,:,None,None,None]
-        #poses = poses[:,:,:,:,None,None]
-        #W_hat = W[:,:,None,None,None]
-        votes = W_hat @ poses
-        votes = votes.view(x_noisy.shape[0],W_hat.shape[1],-1,w,w).sum(2)
-        votes = votes + self.forward_pass[0].bias[None,:,None,None]
-        _y = F.relu(votes)
-
-        # test        
-        #print (votes.view(-1,w,w).sum(0))
-        
-        
 
         if self.training:
             x_reconstruct = self.backward_pass(y)
-            
-            width = self.K*self.st + x.shape[3]
-            pad = int((width - x.shape[3]) / 2)
-            
-            zero = torch.zeros(_y.shape[0], _y.shape[1], _y.shape[3], 1).cuda()
-            padding = torch.zeros(_y.shape[0], _y.shape[1], _y.shape[3], pad).cuda()
-            y_expanded = torch.cat([torch.cat([_y[:,:,:,i:i+1], zero], dim=3) for i in range(_y.shape[3])], dim=3)
-            y_expanded = torch.cat([padding,y_expanded,padding], dim=3)
-            zero = torch.zeros(_y.shape[0], _y.shape[1], 1, width).cuda()
-            padding = torch.zeros(_y.shape[0], _y.shape[1], pad, width).cuda()
-            y_expanded = torch.cat([torch.cat([y_expanded[:,:,i:i+1,:], zero], dim=2) for i in range(_y.shape[2])], dim=2)
-            y_expanded = torch.cat([padding,y_expanded,padding], dim=2)
-            
-            
             loss = self.criterion(x_reconstruct, Variable(x.data, requires_grad=False))
             self.optimizer.zero_grad()
             loss.backward()

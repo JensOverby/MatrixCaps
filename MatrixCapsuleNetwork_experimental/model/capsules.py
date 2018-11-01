@@ -262,7 +262,7 @@ class ConvCapsDAE(nn.Module):
 class CapsNet(nn.Module):
     def __init__(self, args, A=32, AA=32, B=32, C=32, D=32, E=10, r=3, h=4):
         super(CapsNet, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels=4, out_channels=A, kernel_size=5, stride=2)
+        self.conv1 = nn.Conv2d(in_channels=2, out_channels=A, kernel_size=5, stride=2)
         self.bn1 = nn.BatchNorm2d(num_features=A, eps=0.001, momentum=0.1, affine=True)
         self.conv2 = nn.Conv2d(in_channels=A, out_channels=AA, kernel_size=5, stride=2, padding=1)
         self.bn2 = nn.BatchNorm2d(num_features=AA, eps=0.001, momentum=0.1, affine=True)
@@ -274,23 +274,26 @@ class CapsNet(nn.Module):
         self.conv3 = nn.Conv2d(in_channels=AA, out_channels=AA, kernel_size=3, stride=2, padding=0)
         self.bn3 = nn.BatchNorm2d(num_features=AA, eps=0.001, momentum=0.1, affine=True)
         """
-        self.primary_caps = PrimaryCaps(AA, B, h=h)
+        self.primary_caps = PrimaryCaps(AA*2, B, h=h)
         self.convcaps1 = ConvCaps(B, C, kernel=3, stride=2, h=h, iteration=r, coordinate_add=False, transform_share=False)
         self.convcaps2 = ConvCaps(C, D, kernel=3, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
-        self.classcaps = ConvCaps(D, E, kernel=0, stride=1, h=h, iteration=r, coordinate_add=True, transform_share=True)
+        self.convcaps3 = ConvCaps(D, D, kernel=1, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
+        self.classcaps = ConvCaps(D, E, kernel=1, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
 
         #if not args.disable_dae:
         """ Denoising Autoencoder """
         self.loss = nn.MSELoss(reduction='sum')
-        self.Daeconv1 = nn.ConvTranspose2d(in_channels=A, out_channels=4, kernel_size=5, stride=2, output_padding=1)
+        self.Daeconv1 = nn.ConvTranspose2d(in_channels=A, out_channels=2, kernel_size=5, stride=2, output_padding=1)
         self.Daeconv2 = nn.ConvTranspose2d(in_channels=AA, out_channels=A, kernel_size=5, stride=2, padding=1, output_padding=1)
-        self.DaePrim_pose = nn.ConvTranspose2d(in_channels=B*h*h, out_channels=AA, kernel_size=1, stride=1, bias=True)
-        self.DaePrim_activation = nn.ConvTranspose2d(in_channels=B, out_channels=AA, kernel_size=1, stride=1, bias=True)
+        self.DaePrim_pose = nn.ConvTranspose2d(in_channels=B*h*h, out_channels=AA*2, kernel_size=1, stride=1, bias=True)
+        self.DaePrim_activation = nn.ConvTranspose2d(in_channels=B, out_channels=AA*2, kernel_size=1, stride=1, bias=True)
         self.DaeCaps1 = ConvCapsDAE(B, C, kernel=3, stride=2, hh=h*h)
         self.DaeCaps2 = ConvCapsDAE(C, D, kernel=3, stride=1, hh=h*h)
+        self.DaeCaps3 = ConvCapsDAE(D, D, kernel=1, stride=1, hh=h*h)
+        self.DaeCaps4 = ConvCapsDAE(D, E, kernel=1, stride=1, hh=h*h)
         
         self.coord_add_encoder = nn.Sequential(
-            nn.Linear(3, 128),
+            nn.Linear(5, 128),
             nn.ReLU(inplace=True),
             nn.Linear(128, 3),
             nn.Tanh()
@@ -309,7 +312,7 @@ class CapsNet(nn.Module):
         lin1.weight.data *= 50.0 # inialize weights strongest here!
         lin2 = nn.Linear(512, 4096)
         lin2.weight.data *= 0.1
-        lin3 = nn.Linear(4096, 20000)
+        lin3 = nn.Linear(4096, 19000)
         lin3.weight.data *= 0.1
 
         
@@ -328,89 +331,146 @@ class CapsNet(nn.Module):
 
         self.args = args
 
-    def forward(self, lambda_, x, labels=None):
+    def forward(self, lambda_, x, dae=False):
         dae_loss = 0
-        if not self.args.disable_encoder:
             
-            """ convolution 1 and DAE"""
-            x1 = x #* (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
-            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
+        """ convolution 1 and DAE"""
+        if dae:
+            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             x1 = self.conv1(x1)
             x1 = self.bn1(x1)
             x1 = F.relu(x1)
-            if not self.args.disable_dae:
-                x2 = self.Daeconv1(x1)
-                x2 = F.relu(x2)
-                dae_loss = self.loss(x2, x)
+            x1 = self.Daeconv1(x1)
+            x1 = F.relu(x1)
+            dae_loss = self.loss(x1, x)
             
-            x = F.max_pool2d(x1,2, 2)
+        #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        
+        x = F.max_pool2d(x, 2, 2)
 
-            """ convolution 2 and DAE"""
-            x1 = x #* (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
-            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
+        """ convolution 2 and DAE"""
+        if dae:
+            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             x1 = self.conv2(x1)
             x1 = self.bn2(x1)
             x1 = F.relu(x1)
-            if not self.args.disable_dae:
-                x2 = self.Daeconv2(x1)
-                x2 = F.relu(x2)
-                dae_loss += self.loss(x2, x)
+            x1 = self.Daeconv2(x1)
+            x1 = F.relu(x1)
+            dae_loss += self.loss(x1, x)
+            
+        #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = F.relu(x)
 
-            """ Primary Capsules """
-            x = x1
-            x1 = x #* (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
-            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
-            p, a = self.primary_caps(x1)
+        # Combine left and right
+        left = x[:,:,:,:int(x.shape[-1]/2)]
+        right = x[:,:,:,int(x.shape[-1]/2):]
+        x = torch.stack([left,right], dim=1).view(x.shape[0],-1,x.shape[2],x.shape[2])
 
+        """ Primary Capsules """
+        if dae:
+            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            dae_p, dae_a = self.primary_caps(x1)
+    
             """ DAE Primary Capsules """
             #        logit_a = torch.log(a / (1-a))
-            if not self.args.disable_dae:
-                dae_a = self.DaePrim_activation(a)
-                dae_a = F.relu(dae_a)
-                dae_loss += self.loss(dae_a, x)
-                shp = p.shape
-                dae_pose = p.permute(0,4,1,2,3).contiguous().view(shp[0],shp[4]*shp[1],shp[2],shp[3])
-                dae_pose = self.DaePrim_pose(dae_pose)
-                dae_pose = F.relu(dae_pose)
-                dae_loss += self.loss(dae_pose, x)
-
-
-            """ convcaps1 """
-            #p1 = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
-            p1 = p #+ torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
-            p1, a = self.convcaps1(lambda_, p1, a)
-
-            """ DAE1 """
-            if not self.args.disable_dae:
-                recon_poses = self.DaeCaps1(p1, self.convcaps1.sigma_square, p.shape)
-                dae_loss += self.loss(recon_poses, p)
-
+            dae_a = self.DaePrim_activation(dae_a)
+            dae_a = F.relu(dae_a)
+            dae_loss += self.loss(dae_a, x)
+            shp = dae_p.shape
+            dae_p = dae_p.permute(0,4,1,2,3).contiguous().view(shp[0],shp[4]*shp[1],shp[2],shp[3])
+            dae_p = self.DaePrim_pose(dae_p)
+            dae_p = F.relu(dae_p)
+            dae_loss += self.loss(dae_p, x)
             
-            """ convcaps2 """
-            #p = p1 * (p1.data.new(p1.size()).normal_(0, 0.1) > -.1).type_as(p1)
-            p = p1 #+ torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p1.shape) )
-            p, a = self.convcaps2(lambda_, p, a)
-
-            """ DAE2 """
-            if not self.args.disable_dae:
-                recon_poses = self.DaeCaps2(p, self.convcaps2.sigma_square, p1.shape)
-                dae_loss += self.loss(recon_poses, p1)
-
-            """ classcaps """
-            p, a = self.classcaps(lambda_, p, a)
+        #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
+        p, a = self.primary_caps(x)
 
 
-            p = p.squeeze()
+        """ convcaps1 """
+        #p1 = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
+        if dae:
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            p_dae, _ = self.convcaps1(lambda_, p_dae, a)
+            p_dae = self.DaeCaps1(p_dae, self.convcaps1.sigma_square, p.shape)
+            dae_loss += self.loss(p_dae, p)
             
-            # Temporary when batch size = 1
-            if len(p.shape) == 1:
-                p = p.unsqueeze(0)
-                
-            xyz = p[:, (3,7,11)]
-            xyz = self.coord_add_encoder(xyz)
-            p[:, (3,7,11)] = xyz * 1.0
-        else:
-            p = labels
+        p, a = self.convcaps1(lambda_, p, a)
+
+        
+        """ convcaps2 """
+        #p = p1 * (p1.data.new(p1.size()).normal_(0, 0.1) > -.1).type_as(p1)
+        if dae:
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            p_dae, _ = self.convcaps2(lambda_, p_dae, a)
+            p_dae = self.DaeCaps2(p_dae, self.convcaps2.sigma_square, p.shape)
+            dae_loss += self.loss(p_dae, p)
+            
+        p, a = self.convcaps2(lambda_, p, a)
+
+
+        """ convcaps3 """
+        if dae:
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            p_dae, _ = self.convcaps3(lambda_, p_dae, a)
+            p_dae = self.DaeCaps3(p_dae, self.convcaps3.sigma_square, p.shape)
+            dae_loss += self.loss(p_dae, p)
+            
+        p, a = self.convcaps3(lambda_, p, a)
+
+
+        """ classcaps """
+        if dae:
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            p_dae, _ = self.classcaps(lambda_, p_dae, a)
+            p_dae = self.DaeCaps4(p_dae, self.classcaps.sigma_square, p.shape)
+            dae_loss += self.loss(p_dae, p)
+            
+        p, a = self.classcaps(lambda_, p, a)
+        
+
+        """ Find pose with largest activation """
+        dist = torch.arange(float(3)) / 3
+        a_tmp = a.view(a.shape[0],-1)
+        p_tmp = p.view(p.shape[0],-1,p.shape[-1])
+        _, i = torch.max(a_tmp, 1)
+        new_a = []
+        new_p = []
+        coords = []
+        for counter, j in enumerate(i):
+            new_a.append(a_tmp[counter, j])
+            new_p.append(p_tmp[counter, j, :])
+            
+            w_x=j%3
+            w_y=j/3
+            xyz = p_tmp[counter, j, :][(3,7,11),]
+            xyz[0] += dist[w_x]
+            xyz[1] += dist[w_y]
+            xyz = torch.cat([xyz, torch.cuda.FloatTensor([w_x, w_y])], dim=0)
+            coords.append(xyz)
+            #p[:, (3,7,11)] = xyz * 1.0
+            
+        a = torch.stack(new_a, dim=0)
+        p = torch.stack(new_p, dim=0)
+
+        coords = torch.stack(coords, dim=0)
+        coords = self.coord_add_encoder(coords)
+        
+
+
+        #p = p.squeeze()
+        
+        # Temporary when batch size = 1
+        if len(p.shape) == 1:
+            p = p.unsqueeze(0)
+            
+        #xyz = p[:, (3,7,11)]
+        #xyz = self.coord_add_encoder(xyz)
+        p[:, (3,7,11)] = coords * 1.0
 
         # convert to one hot
         #y = Variable(torch.eye(self.num_classes)).cuda().index_select(dim=0, index=y)
