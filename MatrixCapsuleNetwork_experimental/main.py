@@ -28,7 +28,7 @@ if __name__ == '__main__':
     torch.cuda.empty_cache()
     
     parser = argparse.ArgumentParser(description='CapsNet')
-    parser.add_argument('--batch-size', type=int, default=10)
+    parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--test-batch-size', type=int, default=32)
     parser.add_argument('--num-epochs', type=int, default=500)
     parser.add_argument('--lr',help='learning rate',type=float,nargs='?',const=0,default=None,metavar='PERIOD')    
@@ -51,6 +51,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-lambda',help='max lambda value',type=float,default=1.,metavar='N')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=5, metavar='N', help='Scheduler patience')
+    parser.add_argument('--lamb',help='Load prev loss',type=float,nargs='?',const=1e-3,default=None,metavar='PERIOD')    
     args = parser.parse_args()
     args.use_cuda = not args.disable_cuda and torch.cuda.is_available()
 
@@ -58,9 +59,13 @@ if __name__ == '__main__':
     """
     Setup model, load it to CUDA and make JIT compilation
     """
-    A, AA, B, C, D, E, r = 32, 32, 16, 16, 16, args.num_classes, args.r  # a small CapsNet
+    A, AA, B, C, D, E, r = 128, 128, 40, 40, 40, args.num_classes, args.r  # a small CapsNet
     model = mcaps.CapsNet(args, A, AA, B, C, D, E, r, h=4)
-    lambda_ = torch.tensor([1e-3])
+
+    if args.lamb is None:
+        lambda_ = torch.tensor([1e-3])
+    else:
+        lambda_ = torch.tensor([args.lamb])
 
     if args.use_cuda:
         model.cuda()
@@ -114,9 +119,11 @@ if __name__ == '__main__':
                 for k, v in state.items():
                     if torch.is_tensor(v):
                         state[k] = v.cuda()
-        
+
+        if args.lamb is None:
+            lambda_ = torch.tensor([args.max_lambda])
         if args.use_cuda:
-            lambda_ = torch.tensor([args.max_lambda]).cuda()
+            lambda_ = lambda_.cuda()
 
 
     """
@@ -151,7 +158,12 @@ if __name__ == '__main__':
     """
     train_dataset = util.MyImageFolder(root='../../data/dumps/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
+
     steps = len(train_dataset) // args.batch_size
+    if args.lamb is None:
+        step = 2e-1 / steps
+    else:
+        step = (args.max_lambda - args.lamb) / steps
 
 
 
@@ -170,7 +182,7 @@ if __name__ == '__main__':
 
             for data in train_loader:
                 if lambda_ < args.max_lambda:
-                    lambda_ += 2e-1 / steps
+                    lambda_ += step
 
                 imgs, labels = data 
 
@@ -191,6 +203,8 @@ if __name__ == '__main__':
                 right = imgs[:,[0,2],:,int(imgs.shape[-1]/2):]
                 imgs = torch.stack([left[:,:,:,2:97],right[:,:,:,2:97]], dim=3).view(imgs.shape[0],2,100, 190)
                 imgs_ref = torch.stack([left[:,0,:,2:97],right[:,1,:,2:97]], dim=1)
+                del left
+                del right
                 #imgs_stereo = np.stack([left[:,:,:,2:97],right[:,:,:,2:97]], axis=1)
                 
                 
@@ -199,22 +213,22 @@ if __name__ == '__main__':
                 #imgs_two_color = imgs[:,[0,2],:,5:195]
 
                 if args.bright_contrast:
-                    for i in range(imgs_two_channel_red.shape[0]):
+                    for i in range(imgs.shape[0]):
                         bright = random.random()*0.3 - 0.15
                         cont = 1. / (random.random()*1.5 + 0.5)
-                        imgs_four_channel = np.copy(imgs_two_channel_red)
-                        for j in range(imgs_four_channel.shape[1]):
-                            imgs_four_channel[i,j,:,:] = util.applyBrightnessAndContrast(imgs_four_channel[i,j,:,:], bright, cont)
-                    imgs, imgs_ref = Variable(torch.from_numpy(imgs_four_channel)), Variable(torch.from_numpy(imgs_two_channel_red))
-                    if args.use_cuda:
-                        imgs = imgs.cuda()
-                        imgs_ref = imgs_ref.cuda()
-                else:
-                    imgs = Variable(imgs)
-                    imgs_ref = Variable(imgs_ref)
-                    if args.use_cuda:
-                        imgs = imgs.cuda()
-                        imgs_ref = imgs_ref.cuda()
+                        #imgs_four_channel = np.copy(imgs)
+                        for j in range(imgs.shape[1]):
+                            imgs[i,j,:,:] = util.applyBrightnessAndContrast(imgs[i,j,:,:], bright, cont)
+                    #imgs, imgs_ref = Variable(torch.from_numpy(imgs_four_channel)), Variable(torch.from_numpy(imgs_two_channel_red))
+                    #if args.use_cuda:
+                    #    imgs = imgs.cuda()
+                    #    imgs_ref = imgs_ref.cuda()
+
+                imgs = Variable(imgs)
+                imgs_ref = Variable(imgs_ref)
+                if args.use_cuda:
+                    imgs = imgs.cuda()
+                    imgs_ref = imgs_ref.cuda()
 
 
 
@@ -226,7 +240,7 @@ if __name__ == '__main__':
                 #    out_labels, recon, dae_loss = model(lambda_, imgs, True)
                 #    dae_loss *= 1e-6
 
-                out_labels, recon, dae_loss = model(lambda_, imgs, not args.disable_dae)
+                out_labels, recon = model(lambda_, imgs, not args.disable_dae)
 
                 #imgs_sliced = imgs_ref[:,0,:,:]
                 if not args.disable_recon:
@@ -239,10 +253,10 @@ if __name__ == '__main__':
                 
                 caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
 
-                dae_loss *= 3e-7
-                loss = caps_loss + dae_loss
+                #dae_loss *= 3e-7
+                #loss = caps_loss + dae_loss
 
-                loss.backward()
+                caps_loss.backward()
                 
                 optimizer.step()
                 """
