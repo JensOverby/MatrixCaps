@@ -186,6 +186,9 @@ if __name__ == '__main__':
 
                 imgs, labels = data 
 
+                for i in range(imgs.shape[0]):
+                    for j in range(imgs.shape[1]):
+                        util.distort(imgs[i,j,:,:], imgs[0,0,0,0], 20, 10)
 
                 """
                 Labels
