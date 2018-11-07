@@ -9,7 +9,6 @@ import numpy as np
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
-import random
 
 def print_mat(x):
     for i in range(x.size(1)):

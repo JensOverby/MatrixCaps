@@ -186,6 +186,7 @@ if __name__ == '__main__':
 
                 imgs, labels = data 
 
+
                 """
                 Labels
                 """
@@ -239,7 +240,7 @@ if __name__ == '__main__':
                 #    out_labels, recon, dae_loss = model(lambda_, imgs, True)
                 #    dae_loss *= 1e-6
 
-                out_labels, recon = model(lambda_, imgs, not args.disable_dae)
+                out_labels, recon, dae_loss = model(lambda_, imgs, not args.disable_dae)
 
                 #imgs_sliced = imgs_ref[:,0,:,:]
                 if not args.disable_recon:
@@ -252,10 +253,10 @@ if __name__ == '__main__':
                 
                 caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
 
-                #dae_loss *= 3e-7
-                #loss = caps_loss + dae_loss
+                dae_loss *= 3e-7
+                loss = caps_loss + dae_loss
 
-                caps_loss.backward()
+                loss.backward()
                 
                 optimizer.step()
                 """
@@ -267,7 +268,6 @@ if __name__ == '__main__':
                 """
                 #print(loss.item()-dae_loss.item(), dae_loss.item())
                 meter_loss.add(caps_loss.data)
-                """
                 if not args.disable_dae:
                     meter_loss_dae.add(dae_loss.data)
                     if not args.disable_recon:
@@ -275,11 +275,10 @@ if __name__ == '__main__':
                     else:
                         pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), lambda_=lambda_.item())
                 else:
-                """
-                if not args.disable_recon:
-                    pbar.set_postfix(capsloss=meter_loss.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
-                else:
-                    pbar.set_postfix(capsloss=meter_loss.value()[0].item(), lambda_=lambda_.item())
+                    if not args.disable_recon:
+                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
+                    else:
+                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), lambda_=lambda_.item())
                 pbar.update()
 
             
