@@ -90,51 +90,6 @@ def split_in_channels(imgs):
     imgs_stereo = np.stack([left[:,0,:,:],left[:,1,:,:],right[:,0,:,:],right[:,1,:,:]], axis=1)
     return imgs_stereo
 
-def distort(res_imgs, backgroundValue, size_x, size_y):
-    imgs = res_imgs
-    step_x = int(imgs.shape[1]/size_x)
-    step_y = int(imgs.shape[0]/size_y)
-    nothing = step_x*step_y*backgroundValue
-    for j in range(size_y):
-        for i in range(size_x):
-            mini = imgs[j*step_y:(j+1)*step_y,i*step_x:(i+1)*step_x]
-            if mini.sum() != nothing:
-                r_i = random.randint(0,res_imgs.shape[1]-step_x)
-                r_j = random.randint(0,res_imgs.shape[0]-step_y)
-                for y, y_imgs in enumerate(range(r_j,r_j+step_y)):
-                    for x, x_imgs in enumerate(range(r_i,r_i+step_x)):
-                        if res_imgs[y_imgs,x_imgs] == backgroundValue:
-                            res_imgs[y_imgs,x_imgs] = mini[y,x]
-    #return res_imgs
-
-
-
-def crop(imgs, backgroundValue):
-    i = int(imgs.shape[0] / 2)
-    ref_sum = i*imgs.shape[1]*backgroundValue
-    while True:
-        sum_ = imgs[:i,:].sum()
-        if sum_ > (ref_sum*0.99) and sum_ < (ref_sum/0.99):
-            imgs = imgs[i:,:]
-            i = int(imgs.shape[0])
-        i = int(i/2)
-        if i == 1:
-            break
-        ref_sum = i*imgs.shape[1]*backgroundValue
-
-    i = int(imgs.shape[0] / 2)
-    ref_sum = i*imgs.shape[1]*backgroundValue
-    while True:
-        sum_ = imgs[i:,:].sum()
-        if sum_ > (ref_sum*0.99) and sum_ < (ref_sum/0.99):
-            imgs = imgs[:i,:]
-            i = int(imgs.shape[0])
-        i = int(i/2)
-        if i == 1:
-            return imgs
-        ref_sum = i*imgs.shape[1]*backgroundValue
-    
-
 class MyImageFolder(datasets.ImageFolder):
     def __getitem__(self, index):
         path, target = self.samples[index]

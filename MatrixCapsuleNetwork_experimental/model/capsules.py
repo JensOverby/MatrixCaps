@@ -261,11 +261,13 @@ class ConvCapsDAE(nn.Module):
         #poses_recon = votes_recon.view(b,Bkk,self.C,w,w,-1).sum(1)
         #poses_recon = self.transposed_conv2d(poses_recon)
 
+    """
     def forward(self, target, label):
         loss = self.loss(target, label)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+    """
 
 
 
@@ -297,23 +299,23 @@ class CapsNet(nn.Module):
         self.loss1 = nn.MSELoss()
         self.optimizer1 = torch.optim.SGD(self.parameters(), lr=0.1)
         self.Daeconv2 = nn.ConvTranspose2d(in_channels=AA, out_channels=A, kernel_size=5, stride=2, padding=1, output_padding=1)
-        self.loss1 = nn.MSELoss()
+        self.loss2 = nn.MSELoss()
         self.optimizer2 = torch.optim.SGD(self.parameters(), lr=0.1)
         self.DaePrim_pose = nn.ConvTranspose2d(in_channels=B*h*h, out_channels=AA*2, kernel_size=1, stride=1, bias=True)
         self.DaePrim_activation = nn.ConvTranspose2d(in_channels=B, out_channels=AA*2, kernel_size=1, stride=1, bias=True)
-        self.loss1 = nn.MSELoss()
+        self.loss3 = nn.MSELoss()
         self.optimizer3 = torch.optim.SGD(self.parameters(), lr=0.1)
         self.DaeCaps1 = ConvCapsDAE(B, C, kernel=3, stride=2, hh=h*h)
-        self.loss1 = nn.MSELoss()
+        self.loss4 = nn.MSELoss()
         self.optimizer4 = torch.optim.SGD(self.parameters(), lr=0.1)
         self.DaeCaps2 = ConvCapsDAE(C, D, kernel=3, stride=1, hh=h*h)
-        self.loss1 = nn.MSELoss()
+        self.loss5 = nn.MSELoss()
         self.optimizer5 = torch.optim.SGD(self.parameters(), lr=0.1)
         self.DaeCaps3 = ConvCapsDAE(D, D, kernel=1, stride=1, hh=h*h)
-        self.loss1 = nn.MSELoss()
+        self.loss6 = nn.MSELoss()
         self.optimizer6 = torch.optim.SGD(self.parameters(), lr=0.1)
         self.DaeCaps4 = ConvCapsDAE(D, E, kernel=3, stride=1, hh=h*h)
-        self.loss1 = nn.MSELoss()
+        self.loss7= nn.MSELoss()
         self.optimizer7 = torch.optim.SGD(self.parameters(), lr=0.1)
         
         self.coord_add_encoder = nn.Sequential(
@@ -389,7 +391,7 @@ class CapsNet(nn.Module):
             x1 = F.relu(x1)
             dae_loss = self.loss2(x1, x)
             self.optimizer2.zero_grad()
-            dae_loss.backward()
+            dae_loss.backward(retain_graph=True)
             self.optimizer2.step()
             
         x = self.conv2(x)
@@ -422,7 +424,7 @@ class CapsNet(nn.Module):
             dae_p = F.relu(dae_p)
             dae_loss += self.loss3(dae_p, x)
             self.optimizer3.zero_grad()
-            dae_loss.backward()
+            dae_loss.backward(retain_graph=True)
             self.optimizer3.step()
             del dae_p
             
@@ -438,7 +440,7 @@ class CapsNet(nn.Module):
             del self.convcaps1.sigma_square
             dae_loss = self.loss4(p_dae, p)
             self.optimizer4.zero_grad()
-            dae_loss.backward()
+            dae_loss.backward(retain_graph=True)
             self.optimizer4.step()
             del p_dae
             
@@ -453,7 +455,7 @@ class CapsNet(nn.Module):
             del self.convcaps2.sigma_square
             dae_loss = self.loss5(p_dae, p)
             self.optimizer5.zero_grad()
-            dae_loss.backward()
+            dae_loss.backward(retain_graph=True)
             self.optimizer5.step()
             del p_dae
             
@@ -468,7 +470,7 @@ class CapsNet(nn.Module):
             del self.convcaps3.sigma_square
             dae_loss = self.loss6(p_dae, p)
             self.optimizer6.zero_grad()
-            dae_loss.backward()
+            dae_loss.backward(retain_graph=True)
             self.optimizer6.step()
             del p_dae
             

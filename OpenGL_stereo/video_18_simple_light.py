@@ -67,6 +67,24 @@ class ObjLoader:
 
         self.model = np.array(self.model, dtype='float32')
 
+def distort(res_imgs, backgroundValue, size_x, size_y):
+    imgs = res_imgs
+    step_x = int(imgs.shape[1]/size_x)
+    step_y = int(imgs.shape[0]/size_y)
+    nothing = step_x*step_y*backgroundValue
+    for j in range(size_y):
+        for i in range(size_x):
+            mini = imgs[j*step_y:(j+1)*step_y,i*step_x:(i+1)*step_x,:]
+            if mini.sum() != nothing:
+                for _ in range(2):
+                    r_i = random.randint(0,res_imgs.shape[1]-step_x)
+                    r_j = random.randint(0,res_imgs.shape[0]-step_y)
+                    for y, y_imgs in enumerate(range(r_j,r_j+step_y)):
+                        for x, x_imgs in enumerate(range(r_i,r_i+step_x)):
+                            if res_imgs[y_imgs,x_imgs,:].sum() == backgroundValue:
+                                res_imgs[y_imgs,x_imgs,:] = mini[y,x,:]
+                    mini = mini.transpose(1,0,2)
+
 def snapToNumpy():
     x, y, width, height = glGetDoublev(GL_VIEWPORT)
     width, height = int(width), int(height)
@@ -315,11 +333,15 @@ def main():
             glfw.swap_buffers(window)
             left_array = snapToNumpy()
             
-            array = np.concatenate((left_array,right_array), axis=1)
-            
             #array = np.insert(left_array,left_array.shape[1],right_array.transpose(), axis=1)
             
             #array = np.stack([right_array[:,:,0], left_array[:,:,0]], axis=-1) 
+
+            tmp_array = np.stack([left_array,right_array], axis=2).reshape(left_array.shape[0],left_array.shape[1],6)
+            distort(tmp_array, tmp_array[0,0,:].sum(), 10, 10)
+
+            array = np.concatenate((tmp_array[:,:,:3],tmp_array[:,:,3:]), axis=1)
+
             
             save_to_jpg(stereo_filename+'.png', array)
             #render_to_jpg(stereo_filename+'_l.png')
