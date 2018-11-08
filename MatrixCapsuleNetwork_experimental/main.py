@@ -40,6 +40,7 @@ if __name__ == '__main__':
     parser.add_argument('--disable-dae', action='store_true', help='Disable Denoising Auto Encoder')
     parser.add_argument('--bright-contrast', action='store_true', help='Add random brightness and contrast')
     parser.add_argument('--disable-encoder', action='store_true', help='Disable Encoding')
+    parser.add_argument('--unsupervised', action='store_true', help='Enable unsupervised learning')
     parser.add_argument('--load-loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
     parser.add_argument('--print_freq', type=int, default=10)
     parser.add_argument('--pretrained',help='load pretrained epoch',type=int,nargs='?',const=-1,default=None,metavar='PERIOD')    
@@ -51,7 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-lambda',help='max lambda value',type=float,default=1.,metavar='N')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=5, metavar='N', help='Scheduler patience')
-    parser.add_argument('--lamb',help='Load prev loss',type=float,nargs='?',const=1e-3,default=None,metavar='PERIOD')    
+    parser.add_argument('--lamb',help='Load prev loss',type=float,nargs='?',const=1e-3,default=None,metavar='PERIOD')
     args = parser.parse_args()
     args.use_cuda = not args.disable_cuda and torch.cuda.is_available()
 
@@ -159,13 +160,19 @@ if __name__ == '__main__':
     train_dataset = util.MyImageFolder(root='../../data/dumps/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
 
+    if args.unsupervised:
+        unsup_dataset = util.MyImageFolder(root='../../data/unsup/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
+        unsup_loader = torch.utils.data.DataLoader(dataset=unsup_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
+        unsup_iterator = unsup_loader.__iter__()
+
+
     steps = len(train_dataset) // args.batch_size
     if args.lamb is None:
         step = 2e-1 / steps
     else:
         step = (args.max_lambda - args.lamb) / steps
 
-
+    dae_factor = 1e-7
 
     """
     Training Loop
@@ -181,11 +188,20 @@ if __name__ == '__main__':
             meter_loss_dae.reset()
 
             for data in train_loader:
+                
                 if lambda_ < args.max_lambda:
                     lambda_ += step
 
-                imgs, labels = data 
+                imgs, labels = data
 
+                if args.unsupervised:
+                    try:
+                        imgs_unsup, _ = unsup_iterator.next()
+                    except StopIteration:
+                        unsup_iterator = unsup_loader.__iter__()
+                        imgs_unsup, _ = unsup_iterator.next()
+                    imgs = torch.stack([imgs, imgs_unsup], dim=0)
+                    imgs = imgs.view((imgs.shape[0]+imgs.shape[1],) + imgs.shape[2:])
 
                 """
                 Labels
@@ -242,6 +258,9 @@ if __name__ == '__main__':
 
                 out_labels, recon, dae_loss = model(lambda_, imgs, not args.disable_dae)
 
+                if args.unsupervised:
+                    out_labels = out_labels[:args.batch_size]
+
                 #imgs_sliced = imgs_ref[:,0,:,:]
                 if not args.disable_recon:
                     recon = recon.view_as(imgs_ref)
@@ -253,7 +272,7 @@ if __name__ == '__main__':
                 
                 caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
 
-                dae_loss *= 3e-7
+                dae_loss *= dae_factor
                 loss = caps_loss + dae_loss
 
                 loss.backward()
@@ -306,7 +325,12 @@ if __name__ == '__main__':
             """
             scheduler.step(loss)
 
-
+            if not args.disable_dae:
+                dae_loss = meter_loss_dae.value()[0]
+                rel = loss / dae_loss
+                rel /= 10.
+                dae_factor *= rel
+                
             """
             Save model and optimizer states
             """
