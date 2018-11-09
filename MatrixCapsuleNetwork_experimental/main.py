@@ -201,7 +201,7 @@ if __name__ == '__main__':
                         unsup_iterator = unsup_loader.__iter__()
                         imgs_unsup, _ = unsup_iterator.next()
                     imgs = torch.stack([imgs, imgs_unsup], dim=0)
-                    imgs = imgs.view((imgs.shape[0]+imgs.shape[1],) + imgs.shape[2:])
+                    imgs = imgs.view((imgs.shape[0]*imgs.shape[1],) + imgs.shape[2:])
 
                 """
                 Labels
@@ -323,13 +323,17 @@ if __name__ == '__main__':
             """
             Scheduler
             """
-            scheduler.step(loss)
+            #scheduler.step(loss)
 
             if not args.disable_dae:
-                dae_loss = meter_loss_dae.value()[0]
-                rel = loss / dae_loss
-                rel /= 10.
-                dae_factor *= rel
+                if loss < 0.4:
+                    dae_factor *= 0.1
+                else
+                    dae_loss = meter_loss_dae.value()[0]
+                    rel = loss / dae_loss
+                    rel /= 1.
+                    dae_factor *= rel
+                print("dae_factor = {}".format(dae_factor))
                 
             """
             Save model and optimizer states
