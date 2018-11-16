@@ -4,6 +4,7 @@ import model.capsules as mcaps
 import model.util as util
 
 import torch
+import torch.nn as nn
 from torch.autograd import Variable
 from torch.optim import lr_scheduler
 from torchvision import transforms
@@ -30,7 +31,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CapsNet')
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--test-batch-size', type=int, default=32)
-    parser.add_argument('--num-epochs', type=int, default=500)
+    parser.add_argument('--num-epochs', type=int, default=5000)
     parser.add_argument('--lr',help='learning rate',type=float,nargs='?',const=0,default=None,metavar='PERIOD')    
     parser.add_argument('--clip', type=float, default=5)
     parser.add_argument('--r', type=int, default=3)
@@ -81,7 +82,7 @@ if __name__ == '__main__':
         model(lambda_, dummy1, dummy2)
         model = torch.jit.trace(model, (lambda_, dummy1, dummy2), check_inputs=[(lambda_, dummy1, dummy2)])
     
-    capsule_loss = mcaps.CapsuleLoss(args)
+    #capsule_loss = mcaps.CapsuleLoss(args)
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
 
@@ -126,12 +127,16 @@ if __name__ == '__main__':
         if args.use_cuda:
             lambda_ = lambda_.cuda()
 
+    #model.dae_factor = torch.FloatTensor([2.768282e-05])
+
+    capsloss = nn.MSELoss(reduction='sum')
 
     """
     Logging of loss, reconstruction and ground truth
     """
     meter_loss = tnt.meter.AverageValueMeter()
     meter_loss_dae = tnt.meter.AverageValueMeter()
+    meter_loss_unsup = tnt.meter.AverageValueMeter()
     setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env=args.env_name)
     train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env=args.env_name)
     epoch_offset = 0
@@ -146,7 +151,7 @@ if __name__ == '__main__':
                 for loss in loss_list:
                     train_loss_logger.log(epoch_offset, float(loss))
                     epoch_offset += 1
-                        
+
     ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env=args.env_name)
     ground_truth_logger_right = VisdomLogger('image', opts={'title': 'Ground Truth, right'}, env=args.env_name)
     reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env=args.env_name)
@@ -160,19 +165,18 @@ if __name__ == '__main__':
     train_dataset = util.MyImageFolder(root='../../data/dumps/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
 
+    sup_iterator = train_loader.__iter__()
     if args.unsupervised:
         unsup_dataset = util.MyImageFolder(root='../../data/unsup/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
         unsup_loader = torch.utils.data.DataLoader(dataset=unsup_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
         unsup_iterator = unsup_loader.__iter__()
 
 
-    steps = len(train_dataset) // args.batch_size
+    steps = 200 #len(train_dataset) // args.batch_size
     if args.lamb is None:
         step = 2e-1 / steps
     else:
         step = (args.max_lambda - args.lamb) / steps
-
-    dae_factor = 1e-7
 
     """
     Training Loop
@@ -180,28 +184,43 @@ if __name__ == '__main__':
     dae_loss = 0
     for epoch in range(args.num_epochs):
 
+        print("dae_factor = {}".format(model.dae_factor.item()))
+
         # Train
         print("Epoch {}".format(epoch))
 
         with tqdm(total=steps) as pbar:
             meter_loss.reset()
             meter_loss_dae.reset()
+            meter_loss_unsup.reset()
 
-            for data in train_loader:
-                
-                if lambda_ < args.max_lambda:
-                    lambda_ += step
+            #for data in train_loader:
+            for _ in range(steps):
+                try:
+                    data = sup_iterator.next()
+                except StopIteration:
+                    sup_iterator = train_loader.__iter__()
+                    data = sup_iterator.next()
 
                 imgs, labels = data
 
                 if args.unsupervised:
                     try:
-                        imgs_unsup, _ = unsup_iterator.next()
+                        imgs_unsup, labels_unsup = unsup_iterator.next()
                     except StopIteration:
                         unsup_iterator = unsup_loader.__iter__()
-                        imgs_unsup, _ = unsup_iterator.next()
+                        imgs_unsup, labels_unsup = unsup_iterator.next()
                     imgs = torch.stack([imgs, imgs_unsup], dim=0)
                     imgs = imgs.view((imgs.shape[0]*imgs.shape[1],) + imgs.shape[2:])
+                    labels_unsup = util.matMinRep_from_qvec(labels_unsup.float())
+                    labels_unsup = Variable(labels_unsup)
+                    if args.use_cuda:
+                        labels_unsup = labels_unsup.cuda()
+
+
+
+                if lambda_ < args.max_lambda:
+                    lambda_ += step
 
                 """
                 Labels
@@ -259,6 +278,7 @@ if __name__ == '__main__':
                 out_labels, recon, dae_loss = model(lambda_, imgs, not args.disable_dae)
 
                 if args.unsupervised:
+                    out_labels_unsup = out_labels[args.batch_size:]
                     out_labels = out_labels[:args.batch_size]
 
                 #imgs_sliced = imgs_ref[:,0,:,:]
@@ -270,10 +290,19 @@ if __name__ == '__main__':
                 #pos_error = val - ref
                 #labels.view(labels.shape[0], 4, 3)[:,:3,2] = ref - 3*pos_error
                 
-                caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
-
-                dae_loss *= dae_factor
+                """ LOSS CALCULATION """
+                if args.disable_encoder or labels is None:
+                    caps_loss = 0
+                else:
+                    caps_loss = capsloss(out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels)
+                if not args.disable_recon:
+                    recon_loss = capsloss(recon, imgs_ref)
+                    caps_loss += args.recon_factor * recon_loss
+                #caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
+                dae_loss *= model.dae_factor.data.item()
                 loss = caps_loss + dae_loss
+
+
 
                 loss.backward()
                 
@@ -289,10 +318,12 @@ if __name__ == '__main__':
                 meter_loss.add(caps_loss.data)
                 if not args.disable_dae:
                     meter_loss_dae.add(dae_loss.data)
+                    unsup_loss = capsloss(out_labels_unsup.view(labels.shape[0], -1)[:,:labels.shape[1]], labels_unsup)
+                    meter_loss_unsup.add(unsup_loss.data)
                     if not args.disable_recon:
-                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
+                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), unsuploss=meter_loss_unsup.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
                     else:
-                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), lambda_=lambda_.item())
+                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), unsuploss=meter_loss_unsup.value()[0].item(), lambda_=lambda_.item())
                 else:
                     if not args.disable_recon:
                         pbar.set_postfix(capsloss=meter_loss.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
@@ -326,15 +357,11 @@ if __name__ == '__main__':
             #scheduler.step(loss)
 
             if not args.disable_dae:
-                if loss < 0.4:
-                    dae_factor *= 0.1
-                else
-                    dae_loss = meter_loss_dae.value()[0]
-                    rel = loss / dae_loss
-                    rel /= 1.
-                    dae_factor *= rel
-                print("dae_factor = {}".format(dae_factor))
-                
+                if loss < 0.03:
+                    model.dae_factor.data *= 1.1
+                #else:
+                #    model.dae_factor *= 0.99
+
             """
             Save model and optimizer states
             """

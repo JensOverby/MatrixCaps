@@ -331,16 +331,16 @@ class CapsNet(nn.Module):
             nn.Sigmoid()
         )
         self.num_classes = E
-
         self.args = args
+        self.dae_factor = nn.Parameter(torch.FloatTensor([1e-07]))
 
     def forward(self, lambda_, x, dae=False):
         dae_loss = 0
             
         """ convolution 1 and DAE"""
         if dae:
-            x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
-            #x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=x.shape) )
+            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             x1 = self.conv1(x1)
             x1 = self.bn1(x1)
             x1 = F.relu(x1)
@@ -356,8 +356,8 @@ class CapsNet(nn.Module):
 
         """ convolution 2 and DAE"""
         if dae:
-            x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
-            #x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=x.shape) )
+            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             x1 = self.conv2(x1)
             x1 = self.bn2(x1)
             x1 = F.relu(x1)
@@ -378,8 +378,8 @@ class CapsNet(nn.Module):
 
         """ Primary Capsules """
         if dae:
-            x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=x.shape) )
-            #x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=x.shape) )
+            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             dae_p, dae_a = self.primary_caps(x1)
             del x1
     
@@ -402,7 +402,8 @@ class CapsNet(nn.Module):
 
         """ convcaps1 """
         if dae:
-            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
+            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.convcaps1(lambda_, p_dae, a)
             p_dae = self.DaeCaps1(p_dae, self.convcaps1.sigma_square, p.shape)
             del self.convcaps1.sigma_square
@@ -414,7 +415,8 @@ class CapsNet(nn.Module):
         
         """ convcaps2 """
         if dae:
-            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
+            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.convcaps2(lambda_, p_dae, a)
             p_dae = self.DaeCaps2(p_dae, self.convcaps2.sigma_square, p.shape)
             del self.convcaps2.sigma_square
@@ -426,7 +428,8 @@ class CapsNet(nn.Module):
 
         """ convcaps3 """
         if dae:
-            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
+            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.convcaps3(lambda_, p_dae, a)
             p_dae = self.DaeCaps3(p_dae, self.convcaps3.sigma_square, p.shape)
             del self.convcaps3.sigma_square
@@ -438,7 +441,8 @@ class CapsNet(nn.Module):
 
         """ classcaps """
         if dae:
-            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.1, size=p.shape) )
+            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
+            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.classcaps(lambda_, p_dae, a)
             p_dae = self.DaeCaps4(p_dae, self.classcaps.sigma_square, p.shape)
             del self.classcaps.sigma_square
@@ -502,45 +506,3 @@ class CapsNet(nn.Module):
             reconstructions = torch.zeros(1)
 
         return p, reconstructions, dae_loss
-
-
-class CapsuleLoss(nn.Module):
-    def __init__(self, args):
-        super(CapsuleLoss, self).__init__()
-        self.reconstruction_loss = nn.MSELoss(reduction='sum')
-        self.loss = nn.MSELoss(reduction='sum') #args.loss
-        self.args = args
-
-    @staticmethod
-    def spread_loss(x, target, m):  # x:b,10 target:b
-        loss = F.multi_margin_loss(x, target, p=2, margin=m)
-        return loss
-
-    @staticmethod
-    def cross_entropy_loss(x, target, m):
-        loss = F.cross_entropy(x, target)
-        return loss
-
-    @staticmethod
-    def margin_loss(x, labels, m):
-        left = F.relu(0.9 - x, inplace=True) ** 2
-        right = F.relu(x - 0.1, inplace=True) ** 2
-
-        labels = Variable(torch.eye(args.num_classes).cuda()).index_select(dim=0, index=labels)
-
-        margin_loss = labels * left + 0.5 * (1. - labels) * right
-        margin_loss = margin_loss.sum()
-        return margin_loss * 1/x.size(0)
-
-    def forward(self, images, output=None, labels=None, recon=None):
-        #main_loss = getattr(self, self.loss)(output, labels, m)
-        if self.args.disable_encoder or labels is None:
-            main_loss = 0
-        else:
-            main_loss = self.loss(output, labels)
-
-        if not self.args.disable_recon:
-            recon_loss = self.reconstruction_loss(recon, images)
-            main_loss += self.args.recon_factor * recon_loss
-
-        return main_loss

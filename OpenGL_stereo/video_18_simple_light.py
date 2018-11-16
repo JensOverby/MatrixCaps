@@ -134,7 +134,7 @@ eye_distance = 0.5
 def key_callback(window, key, scancode, action, mode):
     if key == glfw.KEY_F12 and action == glfw.PRESS:
         global make_samples_count
-        make_samples_count = 20000
+        make_samples_count = 100
         #render_to_jpg()
     if key == glfw.KEY_ESCAPE:
         global rot_a
