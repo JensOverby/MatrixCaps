@@ -1,2 +1,2 @@
 python3 -m visdom.server &
-python3 main.py --lr 1e-2 --load-loss 10 --disable-recon
+python3 main.py --pretrained --lr 1e-3 --load-loss 10 --disable-dae --bright-contrast --r 5 --batch-size 2

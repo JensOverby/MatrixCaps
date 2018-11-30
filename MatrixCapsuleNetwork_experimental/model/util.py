@@ -102,7 +102,7 @@ class MyImageFolder(datasets.ImageFolder):
         
         labels = np.asarray(data)
         
-        return sample, labels
+        return index, sample, labels
 
 class Conv2dGeneral(nn.Module):
 

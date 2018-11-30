@@ -30,6 +30,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(description='CapsNet')
     parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--batch-size2', type=int, default=8)
     parser.add_argument('--test-batch-size', type=int, default=32)
     parser.add_argument('--num-epochs', type=int, default=5000)
     parser.add_argument('--lr',help='learning rate',type=float,nargs='?',const=0,default=None,metavar='PERIOD')    
@@ -41,7 +42,6 @@ if __name__ == '__main__':
     parser.add_argument('--disable-dae', action='store_true', help='Disable Denoising Auto Encoder')
     parser.add_argument('--bright-contrast', action='store_true', help='Add random brightness and contrast')
     parser.add_argument('--disable-encoder', action='store_true', help='Disable Encoding')
-    parser.add_argument('--unsupervised', action='store_true', help='Enable unsupervised learning')
     parser.add_argument('--load-loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
     parser.add_argument('--print_freq', type=int, default=10)
     parser.add_argument('--pretrained',help='load pretrained epoch',type=int,nargs='?',const=-1,default=None,metavar='PERIOD')    
@@ -51,6 +51,7 @@ if __name__ == '__main__':
     parser.add_argument('--loss', type=str, default='spread_loss', metavar='N', help='loss to use: cross_entropy_loss, margin_loss, spread_loss')
     parser.add_argument('--recon-factor', type=float, default=1e-6, metavar='N', help='use reconstruction loss or not')
     parser.add_argument('--max-lambda',help='max lambda value',type=float,default=1.,metavar='N')
+    parser.add_argument('--noise',help='Add noise value',type=float,default=.3,metavar='N')
     parser.add_argument('--num-workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=5, metavar='N', help='Scheduler patience')
     parser.add_argument('--lamb',help='Load prev loss',type=float,nargs='?',const=1e-3,default=None,metavar='PERIOD')
@@ -127,7 +128,8 @@ if __name__ == '__main__':
         if args.use_cuda:
             lambda_ = lambda_.cuda()
 
-    #model.dae_factor = torch.FloatTensor([2.768282e-05])
+    if args.disable_encoder:
+        model.dae_factor.data = torch.FloatTensor([1e-06])
 
     capsloss = nn.MSELoss(reduction='sum')
 
@@ -163,16 +165,20 @@ if __name__ == '__main__':
     Load training data
     """
     train_dataset = util.MyImageFolder(root='../../data/dumps/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=False)
 
     sup_iterator = train_loader.__iter__()
-    if args.unsupervised:
+    if not args.disable_dae or not args.disable_recon:
+        unsup_loss_logger = VisdomPlotLogger('line', opts={'title': 'Unsup Loss'}, env=args.env_name)
         unsup_dataset = util.MyImageFolder(root='../../data/unsup/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
-        unsup_loader = torch.utils.data.DataLoader(dataset=unsup_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=True)
+        unsup_loader = torch.utils.data.DataLoader(dataset=unsup_dataset, batch_size=args.batch_size2, num_workers=args.num_workers, shuffle=True, drop_last=False)
         unsup_iterator = unsup_loader.__iter__()
+    if not args.disable_dae:
+        dae_loss_logger = VisdomPlotLogger('line', opts={'title': 'DAE Loss'}, env=args.env_name)
 
 
-    steps = 200 #len(train_dataset) // args.batch_size
+
+    steps = len(train_dataset) // args.batch_size
     if args.lamb is None:
         step = 2e-1 / steps
     else:
@@ -182,6 +188,7 @@ if __name__ == '__main__':
     Training Loop
     """
     dae_loss = 0
+    first_loop_unsup = True
     for epoch in range(args.num_epochs):
 
         print("dae_factor = {}".format(model.dae_factor.item()))
@@ -202,16 +209,18 @@ if __name__ == '__main__':
                     sup_iterator = train_loader.__iter__()
                     data = sup_iterator.next()
 
-                imgs, labels = data
+                _,imgs, labels = data
 
-                if args.unsupervised:
+                if not args.disable_dae or not args.disable_recon:
                     try:
-                        imgs_unsup, labels_unsup = unsup_iterator.next()
+                        index_unsup,imgs_unsup, labels_unsup = unsup_iterator.next()
                     except StopIteration:
+                        first_loop_unsup = False
                         unsup_iterator = unsup_loader.__iter__()
-                        imgs_unsup, labels_unsup = unsup_iterator.next()
-                    imgs = torch.stack([imgs, imgs_unsup], dim=0)
-                    imgs = imgs.view((imgs.shape[0]*imgs.shape[1],) + imgs.shape[2:])
+                        index_unsup,imgs_unsup, labels_unsup = unsup_iterator.next()
+                        
+                    imgs = torch.cat([imgs, imgs_unsup], dim=0)
+                    #imgs = imgs.view((imgs.shape[0]*imgs.shape[1],) + imgs.shape[2:])
                     labels_unsup = util.matMinRep_from_qvec(labels_unsup.float())
                     labels_unsup = Variable(labels_unsup)
                     if args.use_cuda:
@@ -277,9 +286,10 @@ if __name__ == '__main__':
 
                 out_labels, recon, dae_loss = model(lambda_, imgs, not args.disable_dae)
 
-                if args.unsupervised:
+                if not args.disable_dae or not args.disable_recon:
                     out_labels_unsup = out_labels[args.batch_size:]
                     out_labels = out_labels[:args.batch_size]
+                    
 
                 #imgs_sliced = imgs_ref[:,0,:,:]
                 if not args.disable_recon:
@@ -292,7 +302,7 @@ if __name__ == '__main__':
                 
                 """ LOSS CALCULATION """
                 if args.disable_encoder or labels is None:
-                    caps_loss = 0
+                    caps_loss = torch.zeros(1).cuda()
                 else:
                     caps_loss = capsloss(out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels)
                 if not args.disable_recon:
@@ -316,13 +326,13 @@ if __name__ == '__main__':
                 """
                 #print(loss.item()-dae_loss.item(), dae_loss.item())
                 meter_loss.add(caps_loss.data)
-                if not args.disable_dae:
-                    meter_loss_dae.add(dae_loss.data)
-                    unsup_loss = capsloss(out_labels_unsup.view(labels.shape[0], -1)[:,:labels.shape[1]], labels_unsup)
+                if not args.disable_dae or not args.disable_recon:
+                    unsup_loss = capsloss(out_labels_unsup.view(labels_unsup.shape[0], -1)[:,:labels_unsup.shape[1]], labels_unsup)
                     meter_loss_unsup.add(unsup_loss.data)
                     if not args.disable_recon:
-                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), unsuploss=meter_loss_unsup.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
+                        pbar.set_postfix(capsloss=meter_loss.value()[0].item(), unsuploss=meter_loss_unsup.value()[0].item(), lambda_=lambda_.item(), recon_=recon.sum().item())
                     else:
+                        meter_loss_dae.add(dae_loss.data)
                         pbar.set_postfix(capsloss=meter_loss.value()[0].item(), daeloss=meter_loss_dae.value()[0].item(), unsuploss=meter_loss_unsup.value()[0].item(), lambda_=lambda_.item())
                 else:
                     if not args.disable_recon:
@@ -348,7 +358,7 @@ if __name__ == '__main__':
             with open("loss.log", "a") as myfile:
                 myfile.write(str(loss.item())+'\n')
 
-            print("Epoch{} Train loss:{:4}".format(epoch, loss))
+            print("Epoch{} Train loss:{:4}".format(epoch, loss.item()))
 
 
             """
@@ -356,11 +366,24 @@ if __name__ == '__main__':
             """
             #scheduler.step(loss)
 
-            if not args.disable_dae:
-                if loss < 0.03:
-                    model.dae_factor.data *= 1.1
-                #else:
-                #    model.dae_factor *= 0.99
+            if not args.disable_dae or not args.disable_recon:
+                unsup_loss_logger.log(epoch + epoch_offset, meter_loss_unsup.value()[0].item())
+                if not args.disable_dae:
+                    dae_loss_logger.log(epoch + epoch_offset, meter_loss_dae.value()[0].item())
+                    factor = 0.02 * args.batch_size/5.
+                    if not args.disable_encoder and loss < factor:
+                        model.dae_factor.data *= 1.1
+                    """
+                    else:
+                        rel = loss.item() / meter_loss_dae.value()[0].item()
+                        error = rel - 5.
+                        if error > 5:
+                            error = 5
+                        if error < -5:
+                            error = -5
+                        model.dae_factor.data += 0.1 * error * model.dae_factor.data
+                        #model.dae_factor *= 0.99
+                    """
 
             """
             Save model and optimizer states

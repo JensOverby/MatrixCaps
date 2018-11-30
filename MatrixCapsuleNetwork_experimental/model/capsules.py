@@ -301,6 +301,16 @@ class CapsNet(nn.Module):
             nn.Linear(128, 3),
             nn.Tanh()
         )
+        
+        """
+        self.Dae_coord_add_encoder = nn.Sequential(
+            nn.Linear(3, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 3),
+            nn.ReLU(inplace=True)
+        )
+        """
+        
         """
         self.coord_add_encoder = nn.Sequential(
             nn.Linear(3, 128),
@@ -332,15 +342,15 @@ class CapsNet(nn.Module):
         )
         self.num_classes = E
         self.args = args
-        self.dae_factor = nn.Parameter(torch.FloatTensor([1e-07]))
+        self.dae_factor = nn.Parameter(torch.FloatTensor([1e-09]))
 
     def forward(self, lambda_, x, dae=False):
         dae_loss = 0
             
         """ convolution 1 and DAE"""
         if dae:
-            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=x.shape) )
-            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=x.shape) )
+            #x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             x1 = self.conv1(x1)
             x1 = self.bn1(x1)
             x1 = F.relu(x1)
@@ -356,8 +366,8 @@ class CapsNet(nn.Module):
 
         """ convolution 2 and DAE"""
         if dae:
-            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=x.shape) )
-            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=x.shape) )
+            #x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             x1 = self.conv2(x1)
             x1 = self.bn2(x1)
             x1 = F.relu(x1)
@@ -378,8 +388,8 @@ class CapsNet(nn.Module):
 
         """ Primary Capsules """
         if dae:
-            #x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=x.shape) )
-            x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
+            x1 = x + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=x.shape) )
+            #x1 = x * (x.data.new(x.size()).normal_(0, 0.1) > -.1).type_as(x)
             dae_p, dae_a = self.primary_caps(x1)
             del x1
     
@@ -402,8 +412,8 @@ class CapsNet(nn.Module):
 
         """ convcaps1 """
         if dae:
-            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
-            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=p.shape) )
+            #p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.convcaps1(lambda_, p_dae, a)
             p_dae = self.DaeCaps1(p_dae, self.convcaps1.sigma_square, p.shape)
             del self.convcaps1.sigma_square
@@ -415,8 +425,8 @@ class CapsNet(nn.Module):
         
         """ convcaps2 """
         if dae:
-            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
-            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=p.shape) )
+            #p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.convcaps2(lambda_, p_dae, a)
             p_dae = self.DaeCaps2(p_dae, self.convcaps2.sigma_square, p.shape)
             del self.convcaps2.sigma_square
@@ -428,8 +438,8 @@ class CapsNet(nn.Module):
 
         """ convcaps3 """
         if dae:
-            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
-            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=p.shape) )
+            #p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.convcaps3(lambda_, p_dae, a)
             p_dae = self.DaeCaps3(p_dae, self.convcaps3.sigma_square, p.shape)
             del self.convcaps3.sigma_square
@@ -441,8 +451,8 @@ class CapsNet(nn.Module):
 
         """ classcaps """
         if dae:
-            #p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=0.2, size=p.shape) )
-            p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
+            p_dae = p + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=p.shape) )
+            #p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
             p_dae, _ = self.classcaps(lambda_, p_dae, a)
             p_dae = self.DaeCaps4(p_dae, self.classcaps.sigma_square, p.shape)
             del self.classcaps.sigma_square
@@ -490,6 +500,17 @@ class CapsNet(nn.Module):
             p = p.unsqueeze(0)
             
         xyz = p[:, (3,7,11)]
+
+        """
+        if dae:
+            xyz_dae = xyz + torch.cuda.FloatTensor( np.random.normal(loc=0.0, scale=self.args.noise, size=xyz.shape) )
+            #p_dae = p * (p.data.new(p.size()).normal_(0, 0.1) > -.1).type_as(p)
+            xyz_dae = self.coord_add_encoder(xyz_dae)
+            xyz_dae = self.Dae_coord_add_encoder(xyz_dae)
+            dae_loss += self.loss(xyz_dae, xyz)
+            del xyz_dae
+        """
+        
         xyz = self.coord_add_encoder(xyz)
         p[:, (3,7,11)] = xyz * 1.0
 
