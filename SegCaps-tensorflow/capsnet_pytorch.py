@@ -20,7 +20,7 @@ from capsule_layers_pytorch import Mask, Length #DeconvCapsuleLayer
 
 import sys
 sys.path.append("../DynamicRouting")
-from layers import ConvCapsuleLayer, calc_same_padding
+from layers import CapsuleLayer, calc_same_padding
 
 
 class CapsNetR3(nn.Module):
@@ -32,78 +32,80 @@ class CapsNetR3(nn.Module):
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=5, stride=1, padding=padding, bias=True)
         #conv1 = layers.Conv2D(filters=16, kernel_size=5, strides=1, padding='same', activation='relu', name='conv1')(x)
     
+        device = torch.device('cuda')
+    
         # Reshape layer to be 1 capsule x [filters] atoms
         #_, H, W, C = conv1.get_shape()
         #conv1_reshaped = layers.Reshape((H.value, W.value, 1, C.value))(conv1)
     
         # Layer 1: Primary Capsule: Conv cap with routing 1
         padding, d = calc_same_padding(d, kernel=5, stride=2)
-        self.primary_caps = ConvCapsuleLayer(output_dim=2, input_atoms=16, output_atoms=16, num_routing=1, stride=2, kernel_size=5, padding=padding, use_cuda=True)
-        #primary_caps = ConvCapsuleLayer(kernel_size=5, num_capsule=2, num_atoms=16, strides=2, padding='same', routings=1, name='primarycaps')(conv1_reshaped)
-    
+        self.primary_caps = CapsuleLayer(output_dim=2, output_atoms=16, num_routing=1,
+                                             voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 5, 'padding': padding}, device=device)
+
         # Layer 2: Convolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=1)
-        self.conv_cap_2_1 = ConvCapsuleLayer(output_dim=4, input_atoms=16, output_atoms=16, num_routing=3, stride=1, kernel_size=5, padding=padding, use_cuda=True)
-        #conv_cap_2_1 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=16, strides=1, padding='same', routings=3, name='conv_cap_2_1')(primary_caps)
+        self.conv_cap_2_1 = CapsuleLayer(output_dim=4, output_atoms=16, num_routing=3,
+                                             voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 2: Convolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=2)
-        self.conv_cap_2_2 = ConvCapsuleLayer(output_dim=4, input_atoms=16, output_atoms=32, num_routing=3, stride=2, kernel_size=5, padding=padding, use_cuda=True)
-        #conv_cap_2_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=32, strides=2, padding='same', routings=3, name='conv_cap_2_2')(conv_cap_2_1)
+        self.conv_cap_2_2 = CapsuleLayer(output_dim=4, output_atoms=32, num_routing=3,
+                                             voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 3: Convolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=1)
-        self.conv_cap_3_1 = ConvCapsuleLayer(output_dim=8, input_atoms=32, output_atoms=32, num_routing=3, stride=1, kernel_size=5, padding=padding, use_cuda=True)
-        #conv_cap_3_1 = ConvCapsuleLayer(kernel_size=5, num_capsule=8, num_atoms=32, strides=1, padding='same', routings=3, name='conv_cap_3_1')(conv_cap_2_2)
+        self.conv_cap_3_1 = CapsuleLayer(output_dim=8, output_atoms=32, num_routing=3,
+                                             voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 3: Convolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=2)
-        self.conv_cap_3_2 = ConvCapsuleLayer(output_dim=8, input_atoms=32, output_atoms=64, num_routing=3, stride=2, kernel_size=5, padding=padding, use_cuda=True)
-        #conv_cap_3_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=8, num_atoms=64, strides=2, padding='same', routings=3, name='conv_cap_3_2')(conv_cap_3_1)
+        self.conv_cap_3_2 = CapsuleLayer(output_dim=8, output_atoms=64, num_routing=3,
+                                             voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 4: Convolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=1)
-        self.conv_cap_4_1 = ConvCapsuleLayer(output_dim=8, input_atoms=64, output_atoms=32, num_routing=3, stride=1, kernel_size=5, padding=padding, use_cuda=True)
-        #conv_cap_4_1 = ConvCapsuleLayer(kernel_size=5, num_capsule=8, num_atoms=32, strides=1, padding='same', routings=3, name='conv_cap_4_1')(conv_cap_3_2)
+        self.conv_cap_4_1 = CapsuleLayer(output_dim=8, output_atoms=32, num_routing=3,
+                                             voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 1 Up: Deconvolutional Capsule
-        padding, d = calc_same_padding(d, kernel=4, stride=0.5)
-        self.deconv_cap_1_1 = ConvCapsuleLayer(output_dim=8, input_atoms=32, output_atoms=32, num_routing=3, stride=2, kernel_size=4, padding=padding-1, type_='ConvTranspose2d', use_cuda=True)
-        #deconv_cap_1_1 = DeconvCapsuleLayer(kernel_size=4, num_capsule=8, num_atoms=32, upsamp_type='deconv', scaling=2, padding='same', routings=3, name='deconv_cap_1_1')(conv_cap_4_1)
+        padding, d = calc_same_padding(d, kernel=4, stride=2, transposed=True)
+        self.deconv_cap_1_1 = CapsuleLayer(output_dim=8, output_atoms=32, num_routing=3,
+                                               voting={'type': 'ConvTranspose2d', 'stride': 2, 'kernel_size': 4, 'padding': padding}, device=device)
     
         # Skip connection
         #up_1 = layers.Concatenate(axis=-2, name='up_1')([deconv_cap_1_1, conv_cap_3_1])
     
         # Layer 1 Up: Deconvolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=1)
-        self.deconv_cap_1_2 = ConvCapsuleLayer(output_dim=4, input_atoms=32, output_atoms=32, num_routing=3, stride=1, kernel_size=5, padding=padding, use_cuda=True)
-        #deconv_cap_1_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=32, strides=1, padding='same', routings=3, name='deconv_cap_1_2')(up_1)
+        self.deconv_cap_1_2 = CapsuleLayer(output_dim=4, output_atoms=32, num_routing=3,
+                                               voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 2 Up: Deconvolutional Capsule
-        padding, d = calc_same_padding(d, kernel=4, stride=0.5)
-        self.deconv_cap_2_1 = ConvCapsuleLayer(output_dim=4, input_atoms=32, output_atoms=16, num_routing=3, stride=2, kernel_size=4, padding=padding-1, type_='ConvTranspose2d', use_cuda=True)
-        #deconv_cap_2_1 = DeconvCapsuleLayer(kernel_size=4, num_capsule=4, num_atoms=16, upsamp_type='deconv', scaling=2, padding='same', routings=3, name='deconv_cap_2_1')(deconv_cap_1_2)
+        padding, d = calc_same_padding(d, kernel=4, stride=2, transposed=True)
+        self.deconv_cap_2_1 = CapsuleLayer(output_dim=4, output_atoms=16, num_routing=3,
+                                               voting={'type': 'ConvTranspose2d', 'stride': 2, 'kernel_size': 4, 'padding': padding}, device=device)
     
         # Skip connection
         #up_2 = layers.Concatenate(axis=-2, name='up_2')([deconv_cap_2_1, conv_cap_2_1])
     
         # Layer 2 Up: Deconvolutional Capsule
         padding, d = calc_same_padding(d, kernel=5, stride=1)
-        self.deconv_cap_2_2 = ConvCapsuleLayer(output_dim=4, input_atoms=16, output_atoms=16, num_routing=3, stride=1, kernel_size=5, padding=padding, use_cuda=True)
-        #deconv_cap_2_2 = ConvCapsuleLayer(kernel_size=5, num_capsule=4, num_atoms=16, strides=1, padding='same', routings=3, name='deconv_cap_2_2')(up_2)
+        self.deconv_cap_2_2 = CapsuleLayer(output_dim=4, output_atoms=16, num_routing=3,
+                                               voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': padding}, device=device)
     
         # Layer 3 Up: Deconvolutional Capsule
-        padding, d = calc_same_padding(d, kernel=4, stride=0.5)
-        self.deconv_cap_3_1 = ConvCapsuleLayer(output_dim=2, input_atoms=16, output_atoms=16, num_routing=3, stride=2, kernel_size=4, padding=padding-1, type_='ConvTranspose2d', use_cuda=True)
-        #deconv_cap_3_1 = DeconvCapsuleLayer(kernel_size=4, num_capsule=2, num_atoms=16, upsamp_type='deconv', scaling=2, padding='same', routings=3, name='deconv_cap_3_1')(deconv_cap_2_2)
+        padding, d = calc_same_padding(d, kernel=4, stride=2, transposed=True)
+        self.deconv_cap_3_1 = CapsuleLayer(output_dim=2, output_atoms=16, num_routing=3,
+                                               voting={'type': 'ConvTranspose2d', 'stride': 2, 'kernel_size': 4, 'padding': padding}, device=device)
     
         # Skip connection
         #up_3 = layers.Concatenate(axis=-2, name='up_3')([deconv_cap_3_1, conv1_reshaped])
     
         # Layer 4: Convolutional Capsule: 1x1
         padding, d = calc_same_padding(d, kernel=1, stride=1)
-        self.seg_caps = ConvCapsuleLayer(output_dim=1, input_atoms=16, output_atoms=16, num_routing=3, stride=1, kernel_size=1, padding=padding, use_cuda=True)
-        #seg_caps = ConvCapsuleLayer(kernel_size=1, num_capsule=1, num_atoms=16, strides=1, padding='same', routings=3, name='seg_caps')(up_3)
+        self.seg_caps = CapsuleLayer(output_dim=1, output_atoms=16, num_routing=3,
+                                         voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 1, 'padding': padding}, device=device)
     
         # Layer 4: This is an auxiliary layer to replace each capsule with its length. Just to match the true label's shape.
         self.out_seg = Length(num_classes=n_class, seg=True)

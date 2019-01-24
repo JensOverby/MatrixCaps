@@ -47,8 +47,8 @@ class CapsNet(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=B, out_channels=B,kernel_size=3, stride=1, padding=1)
         self.bn2 = nn.BatchNorm2d(num_features=B, eps=0.001, momentum=0.1, affine=True)
         self.primary_caps = mcaps.PrimaryCaps(B, C, h=h)
-        self.convcaps1 = mcaps.ConvCaps(args, C, D, kernel=3, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
-        self.convcaps2 = mcaps.ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r, coordinate_add=True, transform_share=True)
+        self.convcaps1 = mcaps.ConvCaps(C, D, kernel=3, stride=1, h=h, iteration=r, coordinate_add=False, transform_share=False)
+        self.convcaps2 = mcaps.ConvCaps(D, E, kernel=0, stride=1, h=h, iteration=r, coordinate_add=True, transform_share=True)
         #self.classcaps = mcaps.ConvCaps(args, D, E, kernel=0, stride=1, h=h, iteration=r, coordinate_add=True, transform_share=True)
 
         """

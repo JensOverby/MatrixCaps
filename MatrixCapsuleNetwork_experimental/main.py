@@ -98,7 +98,7 @@ if __name__ == '__main__':
     """
     Loading weights of previously saved states and optimizer state
     """
-    weight_folder = 'weights/{}'.format(args.env_name.replace(' ', '_'))
+    weight_folder = 'weights'
     if not os.path.isdir(weight_folder):
         os.mkdir(weight_folder)
     if args.pretrained is not None:

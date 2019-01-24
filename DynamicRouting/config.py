@@ -21,9 +21,10 @@ def config_setting():
     boolean_flag(cfg, 'use_cuda', default=True, help='use cuda')
     
     cfg.add_argument('--dataset', type=str, default='mnist', help='dataset name')
-    cfg.add_argument('--path', type=str, default='../data/mnist/', help='the path for dataset')
+    cfg.add_argument('--path', type=str, default='../../data/mnist/', help='the path for dataset')
     cfg.add_argument('--batch_size', type=int, default=100, help='batch size')
     cfg.add_argument('--balance_factor', type=float, default=0.0005, help='classification loss + balance_factor*reconstruciton loss')
+    boolean_flag(cfg, 'constrained', default=False, help='Use constrained capsules')
     args = cfg.parse_args()
     return args
 
