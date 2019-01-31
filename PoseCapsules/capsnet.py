@@ -67,7 +67,7 @@ class CapsNet(nn.Module):
         conv1[:,1:2,:,:] = conv1[:,1:2,:,:] + global_info.unsqueeze(-1)
         """
         
-        #conv1 = self.batchnorm(conv1)
+        conv1 = self.batchnorm(conv1)
         conv1 = F.relu(conv1)
         conv1 = conv1.unsqueeze(1)
     
