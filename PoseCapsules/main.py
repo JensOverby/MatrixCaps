@@ -10,22 +10,21 @@ import util
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from torch.optim import lr_scheduler
 from torchvision import transforms
 from torchvision.utils import make_grid
 import numpy as np
 import random
-
+import time
 import argparse
 from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
-from scipy.misc.common import face
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
 random.seed(1991)
 np.random.seed(1991)
+torch.set_printoptions(precision=3, linewidth=180)
 
 import torch.utils.data as data
 #import readchar
@@ -39,7 +38,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr',help='learning rate',type=float,nargs='?',const=0,default=None,metavar='PERIOD')    
     parser.add_argument('--r', type=int, default=3)
     parser.add_argument('--disable_cuda', action='store_true', help='Disable CUDA')
-    parser.add_argument('--constrained', action='store_true', help='Disable CUDA')
+    parser.add_argument('--normalize',help='Normalize rotation part of generated labels [0-2]',type=int,nargs='?',const=1,default=None,metavar='PERIOD')    
     parser.add_argument('--jit', action='store_true', help='Enable pytorch jit compilation')
     parser.add_argument('--disable_recon', action='store_true', help='Disable Reconstruction')
     parser.add_argument('--load_loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
@@ -50,22 +49,54 @@ if __name__ == '__main__':
     parser.add_argument('--noise',help='Add noise value',type=float,default=.3,metavar='N')
     parser.add_argument('--num_workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=20, metavar='N', help='Scheduler patience')
+    parser.add_argument('--dataset', type=str, default='images100x100', metavar='N', help='dataset options: images100x100,three_dot_3d')
     args = parser.parse_args()
     
+    dump_id = 0
+    time_dump = int(time.time())
     if not args.disable_cuda and torch.cuda.is_available():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')        
 
+
+    """
+    Load training data
+    """
+    if args.dataset == 'images100x100':
+        train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
+        test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
+    elif args.dataset == 'three_dot':
+        train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
+        test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+    else:
+        train_dataset = util.myTest(width=20, sz=5000, img_type=args.dataset) #, transform=transforms.Compose([transforms.ToTensor(),]))
+        test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=False, drop_last=False)
+
+    sup_iterator = train_loader.__iter__()
+    test_iterator = test_loader.__iter__()
+    _, imgs, labels = sup_iterator.next()
+    sup_iterator = train_loader.__iter__()
+
+
+
+
+
     """
     Setup model, load it to CUDA and make JIT compilation
     """
-    image_width = 100
-    model = CapsNet(constrained=args.constrained, image_width=image_width, device=device)
+    normalize = 0
+    if args.normalize:
+        normalize = args.normalize
+    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, normalize=normalize, device=device)
 
     if not args.disable_cuda:
         model.cuda()
-    
+
+    """
     if args.jit:
         dummy1 = torch.rand(args.batch_size,4,100,100).float()
         dummy2 = torch.rand(args.batch_size,12).float()
@@ -74,7 +105,7 @@ if __name__ == '__main__':
             dummy2 = dummy2.cuda()
         model(lambda_, dummy1, dummy2)
         model = torch.jit.trace(model, (lambda_, dummy1, dummy2), check_inputs=[(lambda_, dummy1, dummy2)])
-    
+    """
 
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
@@ -83,6 +114,8 @@ if __name__ == '__main__':
     Construct optimizer, scheduler, and loss functions
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-3, betas=(0.99, 0.999))
+    #optimizer = torch.optim.SGD(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.99)
+    #optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.99)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
     caps_loss = nn.MSELoss(reduction='sum')
     recon_loss = nn.MSELoss(reduction='sum')
@@ -104,17 +137,6 @@ if __name__ == '__main__':
     #setting_logger.log(str(args))
 
 
-    """
-    Load training data
-    """
-    #train_dataset = util.myTest(width=image_width, sz=5000, img_type='three_point', factor=0.25, transform=transforms.Compose([transforms.ToTensor(),]))
-    train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
-    sup_iterator = train_loader.__iter__()
-
-    test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
-    test_iterator = test_loader.__iter__()
 
     """
     If starting from scratch, ramp learning rate
@@ -131,14 +153,6 @@ if __name__ == '__main__':
         ramp_step = (lr-new_lr)/ramp
     """
 
-    """
-    Brightness and Contrast for regularization
-    """
-    brightness_contrast = None
-    if args.brightness != 0 or args.contrast != 0:
-        brightness_contrast = util.RandomBrightnessContrast(args.brightness, args.contrast)
-
-
     steps = len(train_dataset) // args.batch_size
     steps_test = len(test_dataset) // args.batch_size
     for epoch in range(args.num_epochs):
@@ -152,6 +166,7 @@ if __name__ == '__main__':
         with tqdm(total=steps) as pbar:
             meter_loss.reset()
 
+            loss_recon = 0
             for _ in range(steps):
                 try:
                     data = sup_iterator.next()
@@ -161,15 +176,19 @@ if __name__ == '__main__':
 
                 _,imgs, labels = data
 
-
-
                 """
                 Transform images and labels
                 """
-                if brightness_contrast is not None:
-                    imgs = brightness_contrast(imgs)
+                if args.brightness != 0 or args.contrast != 0:
+                    brightness = torch.rand(100)*args.brightness*2 - args.brightness
+                    contrast = torch.rand(100)*args.contrast*2 + 1-args.contrast
+                    brightness = brightness.expand_as(imgs)
+                    contrast = contrast.expand_as(imgs)
+                    imgs = 0.5*(1-contrast) + brightness + contrast*imgs
+                    imgs = torch.clamp(imgs, 0., 1.)
+
                 imgs = Variable(imgs)
-                labels = util.matMinRep_from_qvec(labels)
+                #labels = util.matMinRep_from_qvec(labels)
                 if not args.disable_cuda:
                     imgs = imgs.cuda()
                     labels = labels.cuda()
@@ -180,7 +199,7 @@ if __name__ == '__main__':
                 """
                 optimizer.zero_grad()
 
-                out_labels, recon = model(imgs, disable_recon=args.disable_recon)
+                out_labels, recon = model(imgs, labels, disable_recon=args.disable_recon)
 
                 if not args.disable_recon:
                     recon = recon.view_as(imgs)
@@ -195,7 +214,7 @@ if __name__ == '__main__':
                 if not args.disable_recon:
                     add_loss = recon_loss(recon, imgs)
                     loss += args.recon_factor * add_loss
-                #caps_loss = capsule_loss(imgs_ref, out_labels.view(labels.shape[0], -1)[:,:labels.shape[1]], labels, recon)
+                    loss_recon += args.recon_factor*add_loss.data.cpu().item() / args.batch_size
 
                 loss.backward()
                 
@@ -204,6 +223,7 @@ if __name__ == '__main__':
                 #for param in model.image_decoder.parameters():
                 #    param.requires_grad = True
 
+                loss /= args.batch_size
 
                 """
                 Logging
@@ -234,6 +254,7 @@ if __name__ == '__main__':
             test_loss = 0
             test_loss_recon = 0
             model.eval()
+            model.batchnorm1d.training = True
             for _ in range(steps_test):
                 try:
                     data = test_iterator.next()
@@ -247,53 +268,55 @@ if __name__ == '__main__':
                 Transform images and labels
                 """
                 imgs = Variable(imgs)
-                labels = util.matMinRep_from_qvec(labels)
+                #labels = util.matMinRep_from_qvec(labels)
                 if not args.disable_cuda:
                     imgs = imgs.cuda()
                     labels = labels.cuda()
 
     
-                out_labels, recon = model(imgs, disable_recon=args.disable_recon)
+                out_labels, recon = model(imgs, labels, disable_recon=args.disable_recon)
     
                 if not args.disable_recon:
                     recon = recon.view_as(imgs)
     
-                loss = caps_loss(out_labels, labels)
+                loss = caps_loss(out_labels, labels) / args.batch_size
                 test_loss += loss.data.cpu().item()
                 if not args.disable_recon:
-                    add_loss = args.recon_factor * recon_loss(recon, imgs)
+                    add_loss = args.recon_factor * recon_loss(recon, imgs) / args.batch_size
                     loss += add_loss
                     test_loss_recon += add_loss.data.cpu().item()
                 
             test_loss /= steps_test
             test_loss_recon /= steps_test
-            print("Test loss: {}, Test loss recon: {}".format(test_loss, test_loss_recon))
-
-            loss_relation = test_loss_recon/test_loss
-            if loss_relation > 0.55 and epoch>15:
-                fac = 0.45/loss_relation
-                print("Loss relation = {}. Recon-factor reduced from {} to {}".format(loss_relation, args.recon_factor, args.recon_factor*fac))
-                args.recon_factor *= fac
+            print("Test loss: , Test loss recon: {}".format(test_loss_recon)) #(test_loss, test_loss_recon))
 
 
-
-            
             """
             All train data processed: Do logging
             """
+            loss = meter_loss.value()[0]
+            loss_recon /= steps
+            train_loss_logger.log(epoch + epoch_offset, loss-loss_recon, name='loss')
+            test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
+
+            """
+            loss_relation = loss_recon/(loss-loss_recon)
+            if loss_relation > 0.25 and epoch>15:
+                fac = 0.25/loss_relation
+                print("Loss relation = {}. Recon-factor reduced from {} to {}".format(loss_relation, args.recon_factor, args.recon_factor*fac))
+                args.recon_factor *= fac
+            """
+
             if not args.disable_recon:
                 ground_truth_logger_left.log(make_grid(imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
                 reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
-
-            loss = meter_loss.value()[0]
-            train_loss_logger.log(epoch + epoch_offset, loss)
-
-            test_loss_logger.log(epoch + epoch_offset, test_loss)
+                train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
+                test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
             
             with open("loss.log", "a") as myfile:
                 myfile.write(str(loss) + '\n')
 
-            print("Epoch{} Train loss:{:4} target: {:4}, {:4}, {:4}, {:4}".format(epoch, loss, out_labels[0,0], out_labels[0,1], out_labels[0,2], out_labels[0,3]))
+            #print("Epoch{} Train loss:{:4} target: {:4}, {:4}, {:4}, {:4}".format(epoch, loss, out_labels[0,0], out_labels[0,1], out_labels[0,2], out_labels[0,3]))
 
 
             """
@@ -313,13 +336,15 @@ if __name__ == '__main__':
                 ramp -= 1
             """
 
-
-            if (epoch % 10) ==0:
+            time_now = int(time.time())
+            if (time_now-time_dump) > 60*5: # dump every 15 minutes
+                time_dump = time_now
                 """
                 Save model and optimizer states
                 """
                 model.cpu()
-                torch.save(model.state_dict(), "./weights/model_{}.pth".format(epoch))
+                torch.save(model.state_dict(), "./weights/model_{}.pth".format(dump_id))
+                dump_id += 1
                 if not args.disable_cuda:
                     model.cuda()
                 torch.save(optimizer.state_dict(), "./weights/optim.pth")

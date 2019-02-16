@@ -10,6 +10,7 @@ import torch
 from torch.autograd import Variable
 import torch.utils.data as data
 import random
+random.seed(1991)
 from PIL import Image
 import math
 from tqdm import tqdm
@@ -17,6 +18,7 @@ import os
 import glob
 from torchvision import transforms
 import torch.nn as nn
+import pyrr
 
 def print_mat(x):
     for i in range(x.size(1)):
@@ -97,18 +99,6 @@ def split_in_channels(imgs):
     imgs_stereo = np.stack([left[:,0,:,:],left[:,1,:,:],right[:,0,:,:],right[:,1,:,:]], axis=1)
     return imgs_stereo
 
-class RandomBrightnessContrast(nn.Module):
-    def __init__(self, brightness=0, contrast=0):
-        super(CapsNet, self).__init__()
-        self.brightness_contrast = transforms.ColorJitter(brightness=args.brightness, contrast=args.contrast)
-        self.toPil = transforms.ToPILImage()
-        self.toTensor = transforms.ToTensor()
-
-    def forward(self, img):
-        img = self.toPil(img)
-        img = self.brightness_contrast(img)
-        return self.toTensor(img)
-
 class MyImageFolder(datasets.ImageFolder):
     def __getitem__(self, index):
         path, target = self.samples[index]
@@ -121,21 +111,64 @@ class MyImageFolder(datasets.ImageFolder):
         data = [float(i) for i in data]
         
         labels = torch.tensor(data)
+        labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
+        
+        #labels = torch.cat([labels[:3],labels[7:]])
+        
+        #if labels[6] < 0:
+        #    labels[3:7] *= -1
         
         return index, sample, labels
 
+#labels[:,None,3:7].shape
+#labels[(labels[:,6] < 0).nonzero(),3:7].shape
+
 class myTest(data.Dataset):
-    def __init__(self, width=28, sz=1000, img_type='one_point', factor=0.3, transform=None, target_transform=None):
+    def __init__(self, width=28, sz=1000, img_type='one_point', factor=0.3, rnd = True, transform=None, target_transform=None, max_z=-100000, min_z=100000):
         self.transform = transform
         self.target_transform = target_transform
 
         max_distance = math.sqrt(width**2 + width**2) * factor
+        self.max_z = max_z
+        self.min_z = min_z
 
         self.train_data = []
         self.train_labels = []
         
         with tqdm(total=sz) as pbar:
-            if img_type=='one_point':
+            if img_type=='one_dot':
+                for _ in range(sz):
+                    img = torch.zeros(width,width)
+                    x = int(random.random()*width)
+                    y = int(random.random()*width)
+                    img[x,y] = 1
+                    target = torch.FloatTensor((x,y))
+                    self.train_data.append(img)
+                    self.train_labels.append(target)
+                    pbar.update()
+            elif img_type=='simple_angle':
+                a = 0
+                for _ in range(sz):
+                    img = torch.zeros(width,width)
+                    if rnd:
+                        a = random.random()*2*math.pi
+                    else:
+                        a += 0.063
+                    step_x = math.cos(a)
+                    step_y = math.sin(a)
+                    x = y = width/2
+                    while True:
+                        if x >= width or y >= width or x < 0 or y < 0:
+                            break
+                        img[int(y),int(x)] = 1
+                        x += step_x
+                        y -= step_y
+                            
+                    target = torch.FloatTensor((step_x,step_y))
+                    self.train_data.append(img)
+                    self.train_labels.append(target)
+                    pbar.update()
+            elif img_type=='one_point':
                 for _ in range(sz):
                     img = torch.zeros(width,width)
                     x = int(random.random()*width)
@@ -151,7 +184,153 @@ class myTest(data.Dataset):
                     self.train_data.append(img)
                     self.train_labels.append(target)
                     pbar.update()
-            else:
+            elif img_type=='one_point_rot':
+                for _ in range(sz):
+                    img = torch.zeros(width,width,2)
+                    x = random.random()*(width-2)+1
+                    y = random.random()*(width-2)+1
+                    r = random.random()*math.pi/2 + math.pi/4
+                    img[int(x),int(y),0] = 1 if math.cos(r) > 0 else 0
+                    img[int(x),int(y),1] = math.sin(r)
+                    target = torch.FloatTensor((x,y,math.cos(r),math.sin(r)))
+                    self.train_data.append(img)
+                    self.train_labels.append(target)
+                    pbar.update()
+            elif img_type=='two_capsules':
+                for _ in range(sz):
+                    thetaA = random.random()*2*math.pi
+                    vectorA = torch.tensor([random.random()*10, random.random()*10, math.cos(thetaA), math.sin(thetaA)])
+                    vectorB = torch.tensor([vectorA[0]+math.cos(thetaA-math.pi/2)*4, vectorA[1]+math.sin(thetaA-math.pi/2)*4, math.cos(thetaA+math.pi/2), math.sin(thetaA+math.pi/2)])
+                    target = torch.tensor([vectorA[0]+(vectorB[0]-vectorA[0])/2, vectorA[1]+(vectorB[1]-vectorA[1])/2, math.cos(thetaA-math.pi/2), math.sin(thetaA-math.pi/2)])
+                    
+                    thetaA = random.random()*2*math.pi
+                    noiseA = torch.tensor([random.random()*10, random.random()*10, math.cos(thetaA), math.sin(thetaA)])
+                    thetaA = random.random()*2*math.pi
+                    noiseB = torch.tensor([random.random()*10, random.random()*10, math.cos(thetaA), math.sin(thetaA)])
+                    
+                    img = torch.stack([vectorA, vectorB, noiseA, noiseB]) # batch_size, input_dim, input_atoms, dim_x, dim_y
+                    self.train_data.append(img[...,None, None])
+                    self.train_labels.append(torch.tensor(target))
+                    pbar.update()
+
+                    """                    
+                    x = random.random()*8
+                    point1 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
+                    point2 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
+                    theta = random.random()*2*math.pi
+                    point3 = x, x+2, math.cos(theta), math.sin(theta)
+                    theta = random.random()*2*math.pi
+                    point4 = x, x+2, math.cos(theta), math.sin(theta)
+                    theta = random.random()*2*math.pi
+                    noise1 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
+                    theta = random.random()*2*math.pi
+                    noise2 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
+
+                    img = torch.stack([torch.tensor(point1), torch.tensor(point2), torch.tensor(point3), torch.tensor(point4), torch.tensor(noise1), torch.tensor(noise2)]) # batch_size, input_dim, input_atoms, dim_x, dim_y
+                    target = point3[0]/2, point3[1]/2, point1[2]*2, point1[3]*2
+                    self.train_data.append(img[...,None, None])
+                    self.train_labels.append(torch.tensor(target))
+                    pbar.update()
+                    """
+            elif img_type=='three_dot':
+                scale = width/10.0
+                A = np.array([-1,-2])
+                B = np.array([1,-2])
+                C = np.array([0,2])
+                R = 0
+                
+                for _ in range(sz):
+                    img = torch.zeros(width,width)
+                    #XY = np.array([5., 5.])
+                    XY = np.array([random.random()*5 + 2.5, random.random()*5 + 2.5])
+                    
+                    if rnd:
+                        R = random.random()*2*math.pi
+                    else:
+                        R += 0.063
+                        
+                    AA = ( [A[0]*math.cos(R)-A[1]*math.sin(R), A[0]*math.sin(R)+A[1]*math.cos(R)] + XY ) * scale
+                    BB = ( [B[0]*math.cos(R)-B[1]*math.sin(R), B[0]*math.sin(R)+B[1]*math.cos(R)] + XY ) * scale
+                    CC = ( [C[0]*math.cos(R)-C[1]*math.sin(R), C[0]*math.sin(R)+C[1]*math.cos(R)] + XY ) * scale
+                    Xaxis = [math.cos(R), math.sin(R)]
+
+                    img[int(AA[0]), int(AA[1])] = 1
+                    img[int(BB[0]), int(BB[1])] = 0.7
+                    img[int(CC[0]), int(CC[1])] = 0.4
+                            
+                    target = torch.tensor([XY[0], XY[1], Xaxis[0], Xaxis[1]])
+                    target[:2] = (target[:2] - 2.5) / (5./2.) - 1 # scale to {-1,1}
+                    self.train_data.append(img)
+                    self.train_labels.append(target)
+                    pbar.update()
+            elif img_type=='three_dot_3d':
+                scale = width/10.0
+                A = np.array([-1,-2,0])
+                B = np.array([1,-2,0])
+                C = np.array([0,2,0])
+                R = 0.01222
+
+                if self.max_z != -100000 or self.min_z != 100000:
+                    find_max_min = False
+                else:
+                    find_max_min = True
+                for _ in range(sz):
+                    img = torch.zeros(width,width,3)
+
+                    if rnd:
+                        x_rot = random.random()*2.0*math.pi
+                        y_rot = random.random()*2.0*math.pi
+                        #y_rot = (random.random()*0.5-0.25)*math.pi
+                        z_rot = random.random()*2.0*math.pi
+                        xyz = pyrr.vector3.create(random.random()*5 + 2.5, random.random()*5 + 2.5, 5.0)
+                    else:
+                        x_rot = R
+                        y_rot = R
+                        z_rot = R
+                        xyz = pyrr.vector3.create(math.cos(R)*5 + 2.5, math.sin(R)*5 + 2.5, 5.0)
+                        R += 0.063
+
+                    euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
+                    #rot = pyrr.Quaternion.from_eulers(euler)
+                    mat = pyrr.matrix33.create_from_eulers(euler)
+                    AA = (pyrr.matrix33.apply_to_vector(mat, A)+xyz) * scale
+                    BB = (pyrr.matrix33.apply_to_vector(mat, B)+xyz) * scale
+                    CC = (pyrr.matrix33.apply_to_vector(mat, C)+xyz) * scale
+
+                    red = AA[2] + 1.0*scale
+                    green = BB[2] + 1.0*scale
+                    blue = CC[2] + 1.0*scale
+                    
+                    img[int(AA[0]), int(AA[1]),0] = red
+                    img[int(BB[0]), int(BB[1]),1] = green
+                    img[int(CC[0]), int(CC[1]),2] = blue
+
+                    if find_max_min:
+                        if max([red,green,blue]) > self.max_z:
+                            self.max_z = max([red,green,blue])
+                        if min([red,green,blue]) < self.min_z:
+                            self.min_z = min([red,green,blue])
+                    
+                    #axis = rot.axis
+                    #modulo = int(rot.angle/math.pi)
+                    #angle = rot.angle%math.pi
+                    #if modulo%2 == 1:
+                    #    axis *= -1
+                    target = torch.tensor([xyz[0], xyz[1], xyz[2], mat[0,0], mat[0,1],mat[0,2],mat[1,0],mat[1,1],mat[1,2]])
+                    #target[:3] = (target[:3] - 2.5) / (5./2.) - 1 # scale to {-1,1}
+                    self.train_data.append(img)
+                    self.train_labels.append(target)
+                    pbar.update()
+                
+                a = (0.1-1)/(self.min_z-self.max_z)
+                b = 1-self.max_z*a
+                for i,val in enumerate(self.train_data):
+                    bb = (val > 0).float() * b
+                    aa = (val > 0).float() * a
+                    self.train_data[i] *= aa
+                    self.train_data[i] += bb
+                    
+            elif img_type=='three_point':
                 scale = width/10.0
                 A = np.array([-1,-2])
                 B = np.array([1,-2])
@@ -197,12 +376,13 @@ class myTest(data.Dataset):
         # doing this so that it is consistent with all other datasets
         # to return a PIL Image
         
-        img = Image.fromarray((img.numpy()*255).astype(np.uint8), mode='L')
+        """
+        img = Image.fromarray((img.numpy()*255).astype(np.uint8)) #, mode='L')
         if self.transform is not None:
             img = self.transform(img)
         if self.target_transform is not None:
             target = self.target_transform(target)
-            
+        """
         return index, img, target
 
 

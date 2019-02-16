@@ -167,8 +167,12 @@ def main():
             rabbit_transform[3,1] = pos_y
             rabbit_transform[3,2] = 0
             
-            rot = pyrr.Matrix44.from_x_rotation(random.random()*2.0*math.pi)
-            rot *= pyrr.Matrix44.from_y_rotation(random.random()*2.0*math.pi)
+            x_rot = random.random()*2.0*math.pi
+            y_rot = random.random()*2.0*math.pi
+            z_rot = 0
+            euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
+            rot = pyrr.Matrix44.from_eulers(euler)
+            #rot *= pyrr.Matrix44.from_eulers(y_rot)
             trans = pyrr.Matrix44.identity(float)
             trans[3,0] = random.random()*1.0 - 0.5
             trans[3,1] = random.random()*1.0 - 0.5
@@ -181,7 +185,7 @@ def main():
             
             mat = trans*rot*rabbit_transform
             
-            stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3]) + '_' + str(trans[3,3])
+            stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3]) + '_' + str(trans[3,3]) + '_' + str(x_rot) + '_' + str(y_rot) + '_' + str(z_rot)
 
             """
             right_eye_transform = pyrr.Matrix44.from_y_rotation(eye_angle/2)
