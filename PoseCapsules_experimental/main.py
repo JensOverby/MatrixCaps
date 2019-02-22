@@ -19,12 +19,13 @@ import argparse
 from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
+from sklearn.datasets.lfw import _load_imgs
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
 random.seed(1991)
 np.random.seed(1991)
-torch.set_printoptions(precision=3, linewidth=180)
+torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
 #import readchar
@@ -54,11 +55,6 @@ if __name__ == '__main__':
     
     dump_id = 0
     time_dump = int(time.time())
-    if not args.disable_cuda and torch.cuda.is_available():
-        device = torch.device('cuda')
-    else:
-        device = torch.device('cpu')        
-
 
     """
     Load training data
@@ -91,10 +87,13 @@ if __name__ == '__main__':
     normalize = 0
     if args.normalize:
         normalize = args.normalize
-    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, normalize=normalize, device=device)
+    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, normalize=normalize)
+    model(imgs, labels, disable_recon=args.disable_recon)
 
-    if not args.disable_cuda:
+    if not args.disable_cuda and torch.cuda.is_available():
         model.cuda()
+
+
 
     """
     if args.jit:
@@ -120,6 +119,11 @@ if __name__ == '__main__':
     caps_loss = nn.MSELoss(reduction='sum')
     recon_loss = nn.MSELoss(reduction='sum')
 
+    """
+    Loading weights of previously saved states and optimizer state
+    """
+    if args.pretrained is not None:
+        util.load_pretrained(model, optimizer, args.pretrained, args.lr, not args.disable_cuda)
 
 
     """
@@ -167,6 +171,7 @@ if __name__ == '__main__':
             meter_loss.reset()
 
             loss_recon = 0
+            #torch.cuda.empty_cache()
             for _ in range(steps):
                 try:
                     data = sup_iterator.next()
@@ -186,6 +191,9 @@ if __name__ == '__main__':
                     contrast = contrast.expand_as(imgs)
                     imgs = 0.5*(1-contrast) + brightness + contrast*imgs
                     imgs = torch.clamp(imgs, 0., 1.)
+
+                # Scale xyz part
+                labels[:,6:9] = labels[:,6:9] * 10.
 
                 imgs = Variable(imgs)
                 #labels = util.matMinRep_from_qvec(labels)
@@ -238,16 +246,6 @@ if __name__ == '__main__':
                     pbar.set_postfix(loss=meter_loss.value()[0])
                 pbar.update()
                 
-                """
-                Loading weights of previously saved states and optimizer state
-                """
-                if args.pretrained is not None:
-                    args.pretrained = util.load_pretrained(model, optimizer, args.pretrained, args.lr, not args.disable_cuda)
-
-
-
-
-
             """
             Test Loop
             """

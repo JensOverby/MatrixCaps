@@ -111,7 +111,7 @@ class MyImageFolder(datasets.ImageFolder):
         data = [float(i) for i in data]
         
         labels = torch.tensor(data)
-        labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
+        #labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
         
         #labels = torch.cat([labels[:3],labels[7:]])
         
@@ -403,23 +403,24 @@ def load_loss(train_loss_logger, history_count):
 """
 Loading weights of previously saved states and optimizer state
 """
-def load_pretrained(model, optimizer, model_number, forced_lr, is_cuda):
+def load_pretrained(model, optimizer, model_number, forced_lr, is_cuda, path="./weights/"):
     """
     Create "weights" folder for storing models
     """
-    weight_folder = 'weights'
-    if not os.path.isdir(weight_folder):
-        os.mkdir(weight_folder)
+    #weight_folder = 'weights'
+    #if not os.path.isdir(weight_folder):
+    #    os.mkdir(weight_folder)
 
     if model_number == -1: # latest
-        model_name = max(glob.iglob("./weights/model*.pth"),key=os.path.getctime)
+        model_name = max(glob.iglob("{}model*.pth".format(path)),key=os.path.getctime)
     else:
-        model_name = "./weights/model_{}.pth".format(model_number)
+        model_name = "{}model_{}.pth".format(path, model_number)
         
-    optim_name = "./weights/optim.pth"
+    optim_name = "{}optim.pth".format(path)
     
     model.load_state_dict( torch.load(model_name) )
-    if os.path.isfile(optim_name):
+    
+    if optimizer is not None and os.path.isfile(optim_name):
         optimizer.load_state_dict( torch.load(optim_name) )
         if forced_lr:
             for param_group in optimizer.param_groups:
@@ -431,4 +432,3 @@ def load_pretrained(model, optimizer, model_number, forced_lr, is_cuda):
                 for k, v in state.items():
                     if torch.is_tensor(v):
                         state[k] = v.cuda()
-    return None

@@ -83,15 +83,13 @@ class CapsuleLayer(nn.Module):
     output_dim:    number of classes
     """
     
-    def __init__(self, output_dim, output_atoms, num_routing, voting, device = torch.device('cuda')):
+    def __init__(self, output_dim, output_atoms, num_routing, voting):
         super(CapsuleLayer, self).__init__()
-
         self.not_initialized = True
         self.output_dim = output_dim
         self.output_atoms = output_atoms
         self.num_routing = num_routing
         self.voting = voting
-        self.device = device
         self.bias = nn.Parameter(torch.Tensor(self.output_dim, self.output_atoms, 1, 1))
         nn.init.constant_(self.bias.data, val=0.1)
 
@@ -102,8 +100,8 @@ class CapsuleLayer(nn.Module):
         self.standard = False
 
         if self.voting['type'] == 'standard':
-            self.weights = nn.Parameter(torch.Tensor(x.size(1), x.size(2), self.output_dim * self.output_atoms, 1, 1)).cuda(self.device)
-            nn.init.normal_(self.weights.data, mean=0,std=0.1)      #input_dim, input_atoms, output_dim*output_atoms
+            self.weight = nn.Parameter(torch.Tensor(x.size(1), x.size(2), self.output_dim * self.output_atoms, 1, 1))
+            nn.init.normal_(self.weight.data, mean=0,std=0.1)      #input_dim, input_atoms, output_dim*output_atoms
             self.standard = True
         elif self.voting['type'] == 'Conv2d':
             self.conv = nn.Conv2d(in_channels=x.size(2),
@@ -111,12 +109,13 @@ class CapsuleLayer(nn.Module):
                                            kernel_size=self.voting['kernel_size'],
                                            stride=self.voting['stride'],
                                            padding=self.voting['padding'],
-                                           bias=False).cuda(self.device)
+                                           bias=False)
             if self.do_sort:
-                tmp = self.conv(x.view(x.size(0),x.size(2),x.size(3),x.size(4)))
-                w = tmp.size(-1)
-                self.add = torch.Tensor([[i / w, j / w] for i in range(w) for j in range(w)]).permute(1,0).view(-1,w,w).cuda(self.device)
-                self.scale = Variable(torch.tensor([50.]), requires_grad=True).cuda(self.device)
+                #self.avg_conv_weight = torch.Tensor(self.conv.weight.size()).fill_(1/(self.conv.kernel_size[0]*self.conv.kernel_size[1])).cuda(self.device)
+                w = self.conv(x.view(x.size(0),x.size(2),x.size(3),x.size(4))).size(-1)
+                self.add = nn.Parameter(torch.Tensor([[i / w, j / w] for i in range(w) for j in range(w)]).permute(1,0).view(-1,w,w), requires_grad=False)
+                self.scale = nn.Parameter(torch.Tensor([50.]))
+                
             #self.batchnorm = nn.BatchNorm2d(num_features=self.output_dim * self.output_atoms, eps=0.001, momentum=0.1, affine=True)
         elif self.voting['type'] == 'Conv3d':
             self.conv = nn.Conv3d(in_channels=x.size(2),
@@ -124,26 +123,26 @@ class CapsuleLayer(nn.Module):
                                            kernel_size=self.voting['kernel_size'],
                                            stride=self.voting['stride'],
                                            padding=self.voting['padding'],
-                                           bias=False).cuda(self.device)
+                                           bias=False)#.cuda(self.device)
         elif self.voting['type'] == 'ConvTranspose2d':
             self.conv = nn.ConvTranspose2d(in_channels=x.size(2),
                                            out_channels=self.output_dim * self.output_atoms,
                                            kernel_size=self.voting['kernel_size'],
                                            stride=self.voting['stride'],
                                            padding=self.voting['padding'],
-                                           bias=False).cuda(self.device)
+                                           bias=False)#.cuda(self.device)
         elif self.voting['type'] == 'ConvTranspose3d':
             self.conv = nn.ConvTranspose3d(in_channels=x.size(2),
                                            out_channels=self.output_dim * self.output_atoms,
                                            kernel_size=self.voting['kernel_size'],
                                            stride=self.voting['stride'],
                                            padding=self.voting['padding'],
-                                           bias=False).cuda(self.device)
+                                           bias=False)#.cuda(self.device)
         elif self.voting['type'] == 'experimental':
             self.conv = MyConv(in_channels=x.size(2),
                                            out_channels=self.output_dim * self.output_atoms,
                                            kernel_size=self.voting['kernel_size'],
-                                           stride=self.voting['stride']).cuda(self.device)
+                                           stride=self.voting['stride'])#.cuda(self.device)
         else:
             raise NotImplementedError('Convolutional type not recognized. Must be: Conv2d, Conv3d, ConvTranspose2d, or ConvTranspose3d"')
 
@@ -163,17 +162,39 @@ class CapsuleLayer(nn.Module):
             tile_shape = list(x.size())
             tile_shape[3] = self.output_dim * self.output_atoms     # batch_size, input_dim, input_atoms, output_dim*output_atoms, dim_x, dim_y
             x = x.expand(tile_shape)                                # batch_size, input_dim, input_atoms, output_dim*output_atoms, dim_x, dim_y
-            x = torch.sum(x * self.weights, dim=2)                  # batch_size, input_dim, output_dim*output_atoms
+            x = torch.sum(x * self.weight, dim=2)                  # batch_size, input_dim, output_dim*output_atoms
         else:
             x = x.view(x_sh[0]*x_sh[1], x_sh[2], x_sh[3], x_sh[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
-            x = self.conv(x)                                        # batch_size*input_dim, output_dim*output_atoms, out_dim_x, out_dim_y
 
             if self.do_sort:
-                a_sort = x.sum(1).view(x_sh[0],-1).sort(1, descending=True)[1]
+                shp = self.conv.weight.data.shape
+                mean_weight = self.conv.weight.data.view(shp[0],shp[1],-1).mean(2, keepdim=True).unsqueeze(-1).expand(self.conv.weight.size())
+                corr_weight = (self.conv.weight.data - mean_weight)
+                del mean_weight
+                norm = corr_weight.view(shp[0],shp[1],-1).norm(p=1, dim=2, keepdim=True).unsqueeze(-1)
+                norm_weight = corr_weight / norm
+                del corr_weight
+                del norm
+                mean_x = x.data.view(x.size(0),x.size(1),-1).mean(dim=2, keepdim=True).unsqueeze(-1)
+                corr_x = x.data - mean_x
+                del mean_x
+                
+                x = self.conv(x)
+                corr_x = F.conv2d(corr_x, norm_weight, None, self.conv.stride, self.conv.padding, self.conv.dilation, 1)
+                del norm_weight
+                #a_sort = corr_x.norm(p=2, dim=1).view(x_sh[0],-1).sort(1, descending=True)[1]
+                a_sort = corr_x.view(x_sh[0], self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).norm(p=2, dim=1).sort(1, descending=True)[1]
+                #a_sort = corr_x.view(x_sh[0], self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).max(dim=1)[0].sort(1, descending=True)[1]
+                #a_sort = corr_x.view(x_sh[0], self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).view(x_sh[0],-1).sort(1, descending=True)[1]
+                del corr_x
                 a_sort = a_sort[:,None,:].repeat(1,x.shape[1],1)
+                #a_sort = a_sort.view(x_sh[0],self.output_dim,1,-1).repeat(1,1,self.output_atoms,1).view(x.shape[0],x.shape[1],-1)
                 x = x.view(x_sh[0], self.output_dim, -1, x.size(-2), x.size(-1))
                 x[:,:,:2,:,:] = x[:,:,:2,:,:] + self.add * self.scale
                 x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort,None]
+                del a_sort
+            else:
+                x = self.conv(x)                                        # batch_size*input_dim, output_dim*output_atoms, out_dim_x, out_dim_y
             
         votes = x.view(x_sh[0], -1, self.output_dim, self.output_atoms, x.size(-2), x.size(-1))
                                                                     # batch_size, input_dim, output_dim1, output_atoms, dim_x, dim_y
@@ -182,10 +203,10 @@ class CapsuleLayer(nn.Module):
         logit_shape = list(votes.size())
         logit_shape.pop(3)                                          # batch_size, input_dim, output_dim, dim_x, dim_y
 
-        return _routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing, device=self.device)
+        return _routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing)
 
 
-def _routing(votes, biases, logit_shape, num_routing, device):
+def _routing(votes, biases, logit_shape, num_routing):
     votes_t_shape = [3, 0, 1, 2, 4, 5]
     r_t_shape = [1, 2, 3, 0, 4, 5]
                                                                     # votes: batch_size, input_dim, output_dim, output_atoms, (dim_x, dim_y)
@@ -193,7 +214,7 @@ def _routing(votes, biases, logit_shape, num_routing, device):
     votes_trans = votes.permute(votes_t_shape)                      # output_atoms, batch_size, input_dim, output_dim, (dim_x, dim_y)
     votes_trans_stopped = votes_trans.clone().detach()
 
-    logits = Variable(torch.zeros(logit_shape, device=device), requires_grad=False)
+    logits = Variable(torch.zeros(logit_shape, device=votes.device), requires_grad=False)
                                                                     # batch_size, input_dim, output_dim, (dim_x, dim_y)
     for i in range(num_routing):
         route = F.softmax(logits, 2)                                # batch_size, input_dim, output_dim, (dim_x, dim_y)

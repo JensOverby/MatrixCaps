@@ -166,26 +166,22 @@ def main():
             rabbit_transform[3,0] = pos_x
             rabbit_transform[3,1] = pos_y
             rabbit_transform[3,2] = 0
-            
-            x_rot = random.random()*2.0*math.pi
-            y_rot = random.random()*2.0*math.pi
-            z_rot = 0
-            euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
-            rot = pyrr.Matrix44.from_eulers(euler)
-            #rot *= pyrr.Matrix44.from_eulers(y_rot)
+
+            rot = pyrr.Matrix44.from_x_rotation(random.random()*2.0*math.pi)
+            rot *= pyrr.Matrix44.from_y_rotation(random.random()*2.0*math.pi)
+            #rot *= pyrr.Matrix44.from_z_rotation(random.random()*2.0*math.pi)
             trans = pyrr.Matrix44.identity(float)
             trans[3,0] = random.random()*1.0 - 0.5
             trans[3,1] = random.random()*0.7 - 0.35
-            trans[3,2] = 0 #random.random()*0.2
-            trans[3,3] = 1 #1./(0.7 + random.random() * 0.3) # scale
+            trans[3,2] = 0. #random.random()*0.2
+            trans[3,3] = 1. #1./(0.7 + random.random() * 0.3) # scale
 
             eye_angle = eye_distance/focus_distance
-
-            q = pyrr.Quaternion.from_matrix(rot)
-            
+            #q = pyrr.Quaternion.from_matrix(rot)
             mat = trans*rot*rabbit_transform
             
-            stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3]) + '_' + str(trans[3,3]) + '_' + str(x_rot) + '_' + str(y_rot) + '_' + str(z_rot)
+            #stereo_filename = str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(q[0]) + '_' + str(q[1]) + '_' + str(q[2]) + '_' + str(q[3]) + '_' + str(trans[3,3]) + '_' + str(x_rot) + '_' + str(y_rot) + '_' + str(z_rot)
+            stereo_filename = str(rot[0,0]) + '_' + str(rot[0,1]) + '_' + str(rot[0,2]) + '_' + str(rot[1,0]) + '_' + str(rot[1,1]) + '_' + str(rot[1,2]) + '_' + str(trans[3,0]) + '_' + str(trans[3,1]) + '_' + str(trans[3,2]) + '_' + str(trans[3,3])
 
             """
             right_eye_transform = pyrr.Matrix44.from_y_rotation(eye_angle/2)

@@ -15,21 +15,20 @@ import layers
 
 
 class CapsNet(nn.Module):
-    def __init__(self, output_dim, img_shape, dataset, normalize=0, device=torch.device('cuda')):
+    def __init__(self, output_dim, img_shape, dataset, normalize=0):
         super(CapsNet, self).__init__()
         self.normalize = normalize
-        self.device = device
         
         layer_list = OrderedDict()
 
         if dataset=='two_capsules':
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=2, output_atoms=4, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['caps3'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'}, device=device)
+            layer_list['caps1'] = layers.CapsuleLayer(output_dim=2, output_atoms=4, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps3'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'})
         elif img_shape[-1] == 28:
             kernel_size = 7
-            layer_list['primary'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 7, 'padding': 0}, device=device)
-            layer_list['conv1'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': 0}, device=device)
-            layer_list['conv2'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 4, 'padding': 0}, device=device)
+            layer_list['primary'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 7, 'padding': 0})
+            layer_list['conv1'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': 0})
+            layer_list['conv2'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 4, 'padding': 0})
         elif img_shape[-1] == 100 or img_shape[-1] == 400:
             #100->50->38->6
             """
@@ -57,22 +56,22 @@ class CapsNet(nn.Module):
             layer_list['bn3'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu3'] = nn.ReLU(inplace=True)
             layer_list['conv2prim'] = layers.ConvToPrim()
-            layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'sort': 256, 'stride': 1, 'kernel_size': 7, 'padding': 0}, device=device)
+            layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'sort': 512, 'stride': 1, 'kernel_size': 7, 'padding': 0})
             layer_list['prim2caps'] = layers.PrimToCaps()
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['caps2'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['caps3'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'}, device=device)
+            layer_list['caps1'] = layers.CapsuleLayer(output_dim=32, output_atoms=12, num_routing=3, voting={'type': 'standard', 'test': 1})
+            layer_list['caps2'] = layers.CapsuleLayer(output_dim=32, output_atoms=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps3'] = layers.CapsuleLayer(output_dim=32, output_atoms=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'})
 
             #self.image_decoder = layers.make_decoder( layers.make_decoder_list([output_dim, 512, 1024, 2048, 4096, img_shape[-1]**2 * 3], 'sigmoid') )
 
             """
             kernel_size = 21
-            layer_list['primary'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 17, 'padding': 0}, device=device)
-            layer_list['conv1'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 9, 'padding': 0}, device=device)
-            layer_list['conv2'] = layers.CapsuleLayer(output_dim=8, output_atoms=16, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['conv3'] = layers.CapsuleLayer(output_dim=8, output_atoms=16, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['conv4'] = layers.CapsuleLayer(output_dim=1, output_atoms=16, num_routing=3, voting={'type': 'standard'}, device=device)
+            layer_list['primary'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 17, 'padding': 0})
+            layer_list['conv1'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 9, 'padding': 0})
+            layer_list['conv2'] = layers.CapsuleLayer(output_dim=8, output_atoms=16, num_routing=3, voting={'type': 'standard'})
+            layer_list['conv3'] = layers.CapsuleLayer(output_dim=8, output_atoms=16, num_routing=3, voting={'type': 'standard'})
+            layer_list['conv4'] = layers.CapsuleLayer(output_dim=1, output_atoms=16, num_routing=3, voting={'type': 'standard'})
             """
         elif img_shape[-1] == 20:
             if dataset == 'simple_angle':
@@ -81,9 +80,9 @@ class CapsNet(nn.Module):
                 layer_list['bn1'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
                 layer_list['relu1'] = nn.ReLU(inplace=True)
                 layer_list['conv2prim'] = layers.ConvToPrim()
-                layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 6, 'padding': 0}, device=device)
+                layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 6, 'padding': 0})
                 layer_list['prim2caps'] = layers.PrimToCaps()
-                layer_list['caps2'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'}, device=device)
+                layer_list['caps2'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'})
                 """
                 layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=16, kernel_size=7, stride=1, padding=0, bias=True)
                 layer_list['bn1'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
@@ -91,13 +90,13 @@ class CapsNet(nn.Module):
                 layer_list['conv2prim'] = layers.ConvToPrim()
                 sz = layers.calc_out(20, kernel=7, stride=1, padding=0)
 
-                layer_list['primary'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': sz, 'padding': 0}, device=device)
+                layer_list['primary'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': sz, 'padding': 0})
                 sz = layers.calc_out(sz, kernel=sz, stride=1)
 
-                layer_list['caps1'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 1, 'padding': 0}, device=device)
+                layer_list['caps1'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 1, 'padding': 0})
                 layer_list['prim2caps'] = layers.PrimToCaps()
-                layer_list['caps2'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'standard'}, device=device)
-                layer_list['caps3'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'}, device=device)
+                layer_list['caps2'] = layers.CapsuleLayer(output_dim=8, output_atoms=4, num_routing=3, voting={'type': 'standard'})
+                layer_list['caps3'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'})
                 """
             else:
                 #20->14->9->4 
@@ -108,12 +107,12 @@ class CapsNet(nn.Module):
                 layer_list['bn2'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
                 layer_list['relu2'] = nn.ReLU(inplace=True)
                 layer_list['conv2prim'] = layers.ConvToPrim()
-                layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 6, 'padding': 0}, device=device)
+                layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 6, 'padding': 0})
                 layer_list['prim2caps'] = layers.PrimToCaps()
-                layer_list['caps1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'}, device=device)
-                layer_list['caps2'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'}, device=device)
-                layer_list['caps3'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'}, device=device)
-                layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'}, device=device)
+                layer_list['caps1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'})
+                layer_list['caps2'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'})
+                layer_list['caps3'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'})
+                layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'})
         elif img_shape[-1] == 10:
             layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=8, kernel_size=3, stride=1, padding=1, bias=True)
             layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
@@ -122,11 +121,11 @@ class CapsNet(nn.Module):
             layer_list['bn2'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu2'] = nn.ReLU(inplace=True)
             layer_list['conv2prim'] = layers.ConvToPrim()
-            layer_list['prim1'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 3, 'padding': 1}, device=device)
+            layer_list['prim1'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 3, 'padding': 1})
             layer_list['prim2caps'] = layers.PrimToCaps()
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['caps2'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=3, voting={'type': 'standard'}, device=device)
-            layer_list['caps3'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'}, device=device)
+            layer_list['caps1'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps2'] = layers.CapsuleLayer(output_dim=8, output_atoms=8, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps3'] = layers.CapsuleLayer(output_dim=1, output_atoms=output_dim, num_routing=3, voting={'type': 'standard'})
 
         self.capsules = nn.Sequential(layer_list)
         self.batchnorm1d = nn.BatchNorm1d(num_features=output_dim)
@@ -136,7 +135,7 @@ class CapsNet(nn.Module):
 
         conv_cap = self.capsules(x)
 
-        p = conv_cap.squeeze()
+        p = conv_cap.view(conv_cap.size(0),-1)
         p = self.batchnorm1d(p)
         #p = p/p.sum(1, keepdim=True)
         
@@ -152,13 +151,13 @@ class CapsNet(nn.Module):
             #ones = torch.ones(p.shape[0])
             #act1 = torch.where((lenx > 0.2)*(leny > 0.2)==1, ones, zeros)
 
-            pnorm = torch.ones_like(p).cuda(self.device)
+            pnorm = p.new_full(p.size(), 1) #torch.ones_like(p).cuda(self.device)
             pnorm[:,:3] = lenx
             pnorm[:,3:6] = leny
             p = p / pnorm
 
             if self.normalize > 1:
-                pnorm = torch.ones_like(p).cuda(self.device)
+                pnorm = p.new_full(p.size(), 1) #torch.ones_like(p).cuda(self.device)
                 a = p.data[:,:3]
                 b = p.data[:,3:6]
                 c = torch.cross(a,b,dim=1)

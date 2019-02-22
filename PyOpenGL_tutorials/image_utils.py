@@ -16,7 +16,7 @@ def snapToNumpy():
     data = glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE)
     image = Image.frombytes("RGB", (width, height), data)
     image = image.transpose(Image.FLIP_TOP_BOTTOM)
-    image = image.resize((100,100), Image.ANTIALIAS)
+    image = image.resize((400,400), Image.ANTIALIAS)
     array = np.array(image)
     #im = Image.fromarray(array)
     return array
