@@ -171,7 +171,7 @@ if __name__ == '__main__':
             meter_loss.reset()
 
             loss_recon = 0
-            #torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
             for _ in range(steps):
                 try:
                     data = sup_iterator.next()
@@ -249,46 +249,50 @@ if __name__ == '__main__':
             """
             Test Loop
             """
-            """
+            
             test_loss = 0
             test_loss_recon = 0
             model.eval()
             model.batchnorm1d.training = True
-            for _ in range(steps_test):
-                try:
-                    data = test_iterator.next()
-                except StopIteration:
-                    test_iterator = test_loader.__iter__()
-                    data = test_iterator.next()
+            optimizer.zero_grad()
+            torch.cuda.empty_cache()
+            with torch.no_grad():
+                for _ in range(steps_test):
+                    try:
+                        data = test_iterator.next()
+                    except StopIteration:
+                        test_iterator = test_loader.__iter__()
+                        data = test_iterator.next()
+        
+                    _,imgs, labels = data
+                    
+                    # Scale xyz part
+                    labels[:,6:9] = labels[:,6:9] * 5.
+        
+                    imgs = Variable(imgs)
+                    #labels = util.matMinRep_from_qvec(labels)
+                    if not args.disable_cuda:
+                        imgs = imgs.cuda()
+                        labels = labels.cuda()
     
-                _,imgs, labels = data
-
-                # Scale xyz part
-                labels[:,6:9] = labels[:,6:9] * 5.
-    
-                imgs = Variable(imgs)
-                #labels = util.matMinRep_from_qvec(labels)
-                if not args.disable_cuda:
-                    imgs = imgs.cuda()
-                    labels = labels.cuda()
-
-    
-                out_labels, recon = model(imgs, labels, disable_recon=args.disable_recon)
-    
-                if not args.disable_recon:
-                    recon = recon.view_as(imgs)
-    
-                loss = caps_loss(out_labels, labels) / args.batch_size
-                test_loss += loss.data.cpu().item()
-                if not args.disable_recon:
-                    add_loss = args.recon_factor * recon_loss(recon, imgs) / args.batch_size
-                    loss += add_loss
-                    test_loss_recon += add_loss.data.cpu().item()
+        
+                    out_labels, recon = model(imgs, labels, disable_recon=args.disable_recon)
+        
+                    if not args.disable_recon:
+                        recon = recon.view_as(imgs)
+        
+                    loss = caps_loss(out_labels, labels) / args.batch_size
+                    test_loss += loss.data.cpu().item()
+                    if not args.disable_recon:
+                        add_loss = args.recon_factor * recon_loss(recon, imgs) / args.batch_size
+                        loss += add_loss
+                        test_loss_recon += add_loss.data.cpu().item()
                 
+            #torch.enable_grad()
             test_loss /= steps_test
             test_loss_recon /= steps_test
             print("Test loss: , Test loss recon: {}".format(test_loss_recon)) #(test_loss, test_loss_recon))
-            """
+            
 
 
             """
@@ -297,7 +301,7 @@ if __name__ == '__main__':
             loss = meter_loss.value()[0]
             loss_recon /= steps
             train_loss_logger.log(epoch + epoch_offset, loss-loss_recon, name='loss')
-            #test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
+            test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
 
             """
             loss_relation = loss_recon/(loss-loss_recon)
@@ -311,7 +315,7 @@ if __name__ == '__main__':
                 ground_truth_logger_left.log(make_grid(imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
                 reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
                 train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
-                #test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
+                test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
             
             with open("loss.log", "a") as myfile:
                 myfile.write(str(loss) + '\n')

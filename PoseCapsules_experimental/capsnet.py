@@ -88,7 +88,7 @@ class CapsNet(nn.Module):
             layer_list['relu1'] = nn.ReLU(inplace=True)
             layer_list['conv2prim'] = layers.ConvToPrim()
             layer_list['prim1'] = layers.CapsuleLayer(output_dim=2, output_atoms=12, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 7, 'padding': 0})
-            layer_list['prim2'] = layers.CapsuleLayer(output_dim=4, output_atoms=12, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 7, 'padding': 0})
+            layer_list['prim2'] = layers.CapsuleLayer(output_dim=4, output_atoms=12, num_routing=3, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 7, 'padding': 0})
             layer_list['prim3'] = layers.CapsuleLayer(output_dim=8, output_atoms=12, num_routing=3, voting={'type': 'Conv2d', 'sort': 128, 'stride': 2, 'kernel_size': 7, 'padding': 0})
             layer_list['prim2caps'] = layers.PrimToCaps()
             layer_list['caps1'] = layers.CapsuleLayer(output_dim=16, output_atoms=12, num_routing=3, voting={'type': 'standard'})

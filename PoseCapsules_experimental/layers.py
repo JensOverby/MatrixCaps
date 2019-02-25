@@ -212,7 +212,7 @@ def _routing(votes, biases, logit_shape, num_routing):
                                                                     # votes: batch_size, input_dim, output_dim, output_atoms, (dim_x, dim_y)
     
     votes_trans = votes.permute(votes_t_shape)                      # output_atoms, batch_size, input_dim, output_dim, (dim_x, dim_y)
-    votes_trans_stopped = votes_trans.clone().detach()
+    #votes_trans_stopped = votes_trans.clone().detach()
 
     logits = Variable(torch.zeros(logit_shape, device=votes.device), requires_grad=False)
                                                                     # batch_size, input_dim, output_dim, (dim_x, dim_y)
@@ -225,13 +225,13 @@ def _routing(votes, biases, logit_shape, num_routing):
             preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, output_atoms, (dim_x, dim_y)
             activation = _squash(preactivate)                       # squashing of "output_atoms" dimension
         else:
-            preactivate_unrolled = route * votes_trans_stopped      # output_atoms, batch_size, input_dim, output_dim, (dim_x, dim_y)
+            preactivate_unrolled = route * votes_trans.data #_stopped      # output_atoms, batch_size, input_dim, output_dim, (dim_x, dim_y)
             preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, output_atoms, (dim_x, dim_y)
             preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, output_atoms, (dim_x, dim_y)
             activation = _squash(preactivate)                       # squashing of "output_atoms" dimension
 
             act_3d = activation.unsqueeze_(1)                       # batch_size, 1, output_dim, output_atoms, (dim_x, dim_y)
-            distances = torch.sum(votes * act_3d, dim=3)            # batch_size, input_dim, output_dim, (dim_x, dim_y)
+            distances = torch.sum(votes.data * act_3d, dim=3)            # batch_size, input_dim, output_dim, (dim_x, dim_y)
             logits = logits + distances                             # batch_size, input_dim, output_dim, (dim_x, dim_y)
             
     return activation                                               # batch_size, output_dim, output_atoms, (dim_x, dim_y)
