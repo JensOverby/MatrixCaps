@@ -112,7 +112,7 @@ class CapsuleLayer(nn.Module):
                                            bias=False)
             if self.do_sort:
                 #self.avg_conv_weight = torch.Tensor(self.conv.weight.size()).fill_(1/(self.conv.kernel_size[0]*self.conv.kernel_size[1])).cuda(self.device)
-                w = self.conv(x.view(x.size(0),x.size(2),x.size(3),x.size(4))).size(-1)
+                w = self.conv(x.view(x.size(0)*x.size(1), x.size(2), x.size(3), x.size(4))).size(-1)
                 self.add = nn.Parameter(torch.Tensor([[i / w, j / w] for i in range(w) for j in range(w)]).permute(1,0).view(-1,w,w), requires_grad=False)
                 self.scale = nn.Parameter(torch.Tensor([50.]))
                 
@@ -183,14 +183,14 @@ class CapsuleLayer(nn.Module):
                 corr_x = F.conv2d(corr_x, norm_weight, None, self.conv.stride, self.conv.padding, self.conv.dilation, 1)
                 del norm_weight
                 #a_sort = corr_x.norm(p=2, dim=1).view(x_sh[0],-1).sort(1, descending=True)[1]
-                a_sort = corr_x.view(x_sh[0], self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).norm(p=2, dim=1).sort(1, descending=True)[1]
+                a_sort = corr_x.view(x.size(0), self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).norm(p=2, dim=1).sort(1, descending=True)[1]
                 #a_sort = corr_x.view(x_sh[0], self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).max(dim=1)[0].sort(1, descending=True)[1]
                 #a_sort = corr_x.view(x_sh[0], self.output_dim, self.output_atoms, -1).norm(p=1, dim=2).view(x_sh[0],-1).sort(1, descending=True)[1]
                 del corr_x
                 a_sort = a_sort[:,None,:].repeat(1,x.shape[1],1)
                 #a_sort = a_sort.view(x_sh[0],self.output_dim,1,-1).repeat(1,1,self.output_atoms,1).view(x.shape[0],x.shape[1],-1)
-                x = x.view(x_sh[0], self.output_dim, -1, x.size(-2), x.size(-1))
-                x[:,:,:2,:,:] = x[:,:,:2,:,:] + self.add * self.scale
+                x = x.view(x.size(0), self.output_dim, -1, x.size(-2), x.size(-1))
+                x[:,:,6:8,:,:] = x[:,:,6:8,:,:] + self.add * self.scale
                 x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort,None]
                 del a_sort
             else:

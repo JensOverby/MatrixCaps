@@ -19,7 +19,7 @@ import argparse
 from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
-from sklearn.datasets.lfw import _load_imgs
+#from sklearn.datasets.lfw import _load_imgs
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
@@ -193,7 +193,7 @@ if __name__ == '__main__':
                     imgs = torch.clamp(imgs, 0., 1.)
 
                 # Scale xyz part
-                labels[:,6:9] = labels[:,6:9] * 10.
+                labels[:,6:9] = labels[:,6:9] * 5.
 
                 imgs = Variable(imgs)
                 #labels = util.matMinRep_from_qvec(labels)
@@ -249,6 +249,7 @@ if __name__ == '__main__':
             """
             Test Loop
             """
+            """
             test_loss = 0
             test_loss_recon = 0
             model.eval()
@@ -261,10 +262,10 @@ if __name__ == '__main__':
                     data = test_iterator.next()
     
                 _,imgs, labels = data
+
+                # Scale xyz part
+                labels[:,6:9] = labels[:,6:9] * 5.
     
-                """
-                Transform images and labels
-                """
                 imgs = Variable(imgs)
                 #labels = util.matMinRep_from_qvec(labels)
                 if not args.disable_cuda:
@@ -287,6 +288,7 @@ if __name__ == '__main__':
             test_loss /= steps_test
             test_loss_recon /= steps_test
             print("Test loss: , Test loss recon: {}".format(test_loss_recon)) #(test_loss, test_loss_recon))
+            """
 
 
             """
@@ -295,7 +297,7 @@ if __name__ == '__main__':
             loss = meter_loss.value()[0]
             loss_recon /= steps
             train_loss_logger.log(epoch + epoch_offset, loss-loss_recon, name='loss')
-            test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
+            #test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
 
             """
             loss_relation = loss_recon/(loss-loss_recon)
@@ -309,7 +311,7 @@ if __name__ == '__main__':
                 ground_truth_logger_left.log(make_grid(imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
                 reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
                 train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
-                test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
+                #test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
             
             with open("loss.log", "a") as myfile:
                 myfile.write(str(loss) + '\n')
