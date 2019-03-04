@@ -19,6 +19,7 @@ import glob
 from torchvision import transforms
 import torch.nn as nn
 import pyrr
+from axisAngle import get_y
 
 def print_mat(x):
     for i in range(x.size(1)):
@@ -100,6 +101,10 @@ def split_in_channels(imgs):
     return imgs_stereo
 
 class MyImageFolder(datasets.ImageFolder):
+    def __init__(self, root, transform=None, target_transform=None, data_rep=0):
+        super(MyImageFolder, self).__init__(root, transform, target_transform)
+        self.data_rep = data_rep
+
     def __getitem__(self, index):
         path, target = self.samples[index]
         sample = self.loader(path)
@@ -109,14 +114,18 @@ class MyImageFolder(datasets.ImageFolder):
         data = data[-1].split('_')
         data[-1] = data[-1].split('.p')[0]
         data = [float(i) for i in data]
+
+        if self.data_rep==0:
+            labels = torch.tensor(data)
+        else:
+            R = np.array(data[:6]).reshape(2,3)
+            R = np.stack([R[0], R[1], np.cross(R[0],R[1])], axis=0)
+            axis_angle = get_y(R)
+            #Q = pyrr.Quaternion.from_matrix(R)
+            axis_angle_rep = np.concatenate([axis_angle, np.array(data[6:9])], axis=0)
+            labels = torch.from_numpy(axis_angle_rep).float()
         
-        labels = torch.tensor(data)
         #labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
-        
-        #labels = torch.cat([labels[:3],labels[7:]])
-        
-        #if labels[6] < 0:
-        #    labels[3:7] *= -1
         
         return index, sample, labels
 
@@ -125,6 +134,7 @@ class MyImageFolder(datasets.ImageFolder):
 
 class myTest(data.Dataset):
     def __init__(self, width=28, sz=1000, img_type='one_point', factor=0.3, rnd = True, transform=None, target_transform=None, max_z=-100000, min_z=100000):
+        super(myTest, self).__init__()
         self.transform = transform
         self.target_transform = target_transform
 
@@ -257,6 +267,8 @@ class myTest(data.Dataset):
                     img[int(AA[0]), int(AA[1])] = 1
                     img[int(BB[0]), int(BB[1])] = 0.7
                     img[int(CC[0]), int(CC[1])] = 0.4
+
+                    img = img.unsqueeze(0)
                             
                     target = torch.tensor([XY[0], XY[1], Xaxis[0], Xaxis[1]])
                     target[:2] = (target[:2] - 2.5) / (5./2.) - 1 # scale to {-1,1}

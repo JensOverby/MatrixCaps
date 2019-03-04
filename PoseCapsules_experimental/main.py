@@ -19,6 +19,8 @@ import argparse
 from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
+from se3_geodesic_loss import SE3GeodesicLoss
+from axisAngle import geodesic_loss, get_error
 #from sklearn.datasets.lfw import _load_imgs
 
 torch.manual_seed(1991)
@@ -50,18 +52,19 @@ if __name__ == '__main__':
     parser.add_argument('--noise',help='Add noise value',type=float,default=.3,metavar='N')
     parser.add_argument('--num_workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=20, metavar='N', help='Scheduler patience')
-    parser.add_argument('--dataset', type=str, default='images100x100', metavar='N', help='dataset options: images100x100,three_dot_3d')
+    parser.add_argument('--dataset', type=str, default='images', metavar='N', help='dataset options: images,three_dot_3d')
+    parser.add_argument('--loss', type=str, default='MSE', metavar='N', help='loss options: MSE,GEO')
     args = parser.parse_args()
     
-    dump_id = 0
     time_dump = int(time.time())
 
     """
     Load training data
     """
+    data_rep = 0 if args.loss == 'MSE' else 1
     if args.dataset == 'images':
-        train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
-        test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
+        train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=data_rep)
+        test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=data_rep)
     elif args.dataset == 'three_dot':
         train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
@@ -70,7 +73,7 @@ if __name__ == '__main__':
         test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=False, drop_last=False)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
 
     sup_iterator = train_loader.__iter__()
     test_iterator = test_loader.__iter__()
@@ -87,7 +90,10 @@ if __name__ == '__main__':
     normalize = 0
     if args.normalize:
         normalize = args.normalize
-    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, normalize=normalize)
+    imgs = imgs[:2]
+    labels = labels[:2]
+    lambda_ = 0.9 if args.pretrained else 1e-3
+    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, normalize=normalize, lambda_=lambda_)
     model(imgs, labels, disable_recon=args.disable_recon)
 
     if not args.disable_cuda and torch.cuda.is_available():
@@ -116,7 +122,12 @@ if __name__ == '__main__':
     #optimizer = torch.optim.SGD(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.99)
     #optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.99)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
-    caps_loss = nn.MSELoss(reduction='sum')
+    
+    if args.loss == 'MSE':
+        caps_loss = nn.MSELoss(reduction='sum')
+    else:
+        #caps_loss = geodesic_loss()
+        caps_loss = SE3GeodesicLoss.apply
     recon_loss = nn.MSELoss(reduction='sum')
 
     """
@@ -130,6 +141,9 @@ if __name__ == '__main__':
     Logging of loss, reconstruction and ground truth
     """
     meter_loss = tnt.meter.AverageValueMeter()
+    medErrAvg = tnt.meter.AverageValueMeter()
+    xyzErrAvg = tnt.meter.AverageValueMeter()    
+    
     setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
     train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
     test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
@@ -167,8 +181,11 @@ if __name__ == '__main__':
         Training Loop
         """
         model.train()
+        #model.capsules.bn1.training = False
         with tqdm(total=steps) as pbar:
             meter_loss.reset()
+            medErrAvg.reset()
+            xyzErrAvg.reset()
 
             loss_recon = 0
             torch.cuda.empty_cache()
@@ -193,7 +210,7 @@ if __name__ == '__main__':
                     imgs = torch.clamp(imgs, 0., 1.)
 
                 # Scale xyz part
-                labels[:,6:9] = labels[:,6:9] * 5.
+                #labels[:,6:9] = labels[:,6:9] * 5.
 
                 imgs = Variable(imgs)
                 #labels = util.matMinRep_from_qvec(labels)
@@ -236,14 +253,18 @@ if __name__ == '__main__':
                 """
                 Logging
                 """
-                #print(loss.item()-dae_loss.item(), dae_loss.item())
                 meter_loss.add(loss.data.cpu().item())
+                #print(loss.item()-dae_loss.item(), dae_loss.item())
+                if data_rep == 1:
+                    medErr, xyzErr = get_error(out_labels.data.cpu(), labels.data.cpu())
+                    medErrAvg.add(medErr)
+                    xyzErrAvg.add(xyzErr)
                 if not args.disable_recon:
                     #unsup_loss = capsloss(out_labels_unsup.view(labels_unsup.shape[0], -1)[:,:labels_unsup.shape[1]], labels_unsup)
                     #meter_loss_unsup.add(unsup_loss.data)
                     pbar.set_postfix(loss=meter_loss.value()[0], recon_=recon.sum().data.cpu().item())
                 else:
-                    pbar.set_postfix(loss=meter_loss.value()[0])
+                    pbar.set_postfix(loss=meter_loss.value()[0], medErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
                 pbar.update()
                 
             """
@@ -253,7 +274,7 @@ if __name__ == '__main__':
             test_loss = 0
             test_loss_recon = 0
             model.eval()
-            model.batchnorm1d.training = True
+            #model.batchnorm1d.training = True
             optimizer.zero_grad()
             torch.cuda.empty_cache()
             with torch.no_grad():
@@ -347,8 +368,7 @@ if __name__ == '__main__':
                 Save model and optimizer states
                 """
                 model.cpu()
-                torch.save(model.state_dict(), "./weights/model_{}.pth".format(dump_id))
-                dump_id += 1
+                torch.save(model.state_dict(), "./weights/model_{}.pth".format(epoch))
                 if not args.disable_cuda:
                     model.cuda()
                 torch.save(optimizer.state_dict(), "./weights/optim.pth")
