@@ -51,6 +51,13 @@ def make_decoder_list(layer_sizes, out_activation, mean=0.0, std=0.1, bias=0.0):
         model.append(('softplus', nn.Softplus()))
     return model
 
+class ScaleLayer(nn.Module):
+    def __init__(self, scale):
+        super(ScaleLayer, self).__init__()
+        self.scale = scale
+    def forward(self, x):
+        return self.scale * x
+
 class PrimToCaps(nn.Module):
     def forward(self, x):
         x = x.permute(0, 1, 3, 4, 2).contiguous()                   # batch_size, input_dim, dim_x, dim_y, input_atoms
@@ -219,7 +226,10 @@ class CapsuleLayer(nn.Module):
                 a_sort = a_sort[:,None,:].repeat(1,x.shape[1],1)
                 #a_sort = a_sort.view(x_sh[0],self.output_dim,1,-1).repeat(1,1,self.h,1).view(x.shape[0],x.shape[1],-1)
                 x = x.view(x.size(0), self.output_dim, -1, x.size(-2), x.size(-1))
-                x[:,:,:2,:,:] = x[:,:,:2,:,:] + self.add * self.scale
+                x[:,:,6:8,:,:] = x[:,:,6:8,:,:] + self.add * self.scale
+                #x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort*2,None]
+                #idx = torch.randperm(self.do_sort*2)
+                #x = x[:,:,idx,:][:,:,:self.do_sort,:]
                 x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort,None]
                 del a_sort
             else:
@@ -253,8 +263,8 @@ class CapsuleLayer(nn.Module):
             poses = self.capsules_pose(x)
             sh = poses.size()
             poses = poses.view(sh[0], self.output_dim, -1, sh[2], sh[3]).permute(0, 1, 3, 4, 2).contiguous()
-            #poses = poses.view(sh[0], -1, self.output_dim, sh[2], sh[3]).permute(0, 2, 3, 4, 1).contiguous()
             activations = self.capsules_activation(x)
+            #activations = poses.norm(p=2, dim=-1)
             activations = torch.sigmoid(activations)
             return poses.view(sh[0], -1, self.h*self.h), activations.view(sh[0], -1)
 

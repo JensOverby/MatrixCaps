@@ -120,9 +120,9 @@ class MyImageFolder(datasets.ImageFolder):
         else:
             R = np.array(data[:6]).reshape(2,3)
             R = np.stack([R[0], R[1], np.cross(R[0],R[1])], axis=0)
-            axis_angle = get_y(R)
-            #Q = pyrr.Quaternion.from_matrix(R)
-            axis_angle_rep = np.concatenate([axis_angle, np.array(data[6:9])], axis=0)
+            #axis_angle = get_y(R)
+            Q = pyrr.Quaternion.from_matrix(R)
+            axis_angle_rep = np.concatenate([Q.axis*Q.angle, np.array(data[6:9])], axis=0)
             labels = torch.from_numpy(axis_angle_rep).float()
         
         #labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
@@ -444,3 +444,33 @@ def load_pretrained(model, optimizer, model_number, forced_lr, is_cuda, path="./
                 for k, v in state.items():
                     if torch.is_tensor(v):
                         state[k] = v.cuda()
+
+# function to get angle error between gt and predicted viewpoints
+def get_error(yhat, ygt, data_rep):
+    xyz_idx = 6 if data_rep==0 else 3
+    N = ygt.shape[0]
+    az_error = np.zeros(N)
+    for i in range(N):
+        # read the 3-dim axis-angle vectors
+        if data_rep==0:
+            R1 = np.stack([ygt[i,:3], ygt[i,3:6], np.cross(ygt[i,:3],ygt[i,3:6])])
+            R2 = np.stack([yhat[i,:3], yhat[i,3:6], np.cross(yhat[i,:3],yhat[i,3:6])])
+        else:
+            v1 = ygt[i,:3]
+            v2 = yhat[i,:3]
+            # get correponding rotation matrices
+            R1 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v1))
+            R2 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v2))
+        #R1 = get_R(v1)
+        #R2 = get_R(v2)
+        # compute \|log(R_1^T R_2)\|_F/\sqrt(2) using Rodrigues' formula
+        R = np.dot(R1.T, R2)
+        tR = np.trace(R)
+        theta = np.arccos(np.clip(0.5*(tR-1), -1.0, 1.0))   # clipping to avoid numerical issues
+        atheta = np.abs(theta)
+        # print('i:{0}, tR:{1}, theta:{2}'.format(i, tR, theta, atheta))
+        az_error[i] = np.rad2deg(atheta)
+    medErr = np.median(az_error)
+    xyzErr = np.linalg.norm(yhat[:,xyz_idx:] - ygt[:,xyz_idx:], ord=1, axis=1)
+    xyzErr = np.median(xyzErr)
+    return medErr, xyzErr

@@ -4,7 +4,7 @@ Created on Jan 14, 2019
 @author: jens
 '''
 
-from capsnet import CapsNet
+from capsnet import MSELossScaled, CapsNet
 import util
 
 import torch
@@ -20,7 +20,6 @@ from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
 from se3_geodesic_loss import SE3GeodesicLoss
-from axisAngle import geodesic_loss, get_error
 #from sklearn.datasets.lfw import _load_imgs
 
 torch.manual_seed(1991)
@@ -93,7 +92,7 @@ if __name__ == '__main__':
     imgs = imgs[:2]
     labels = labels[:2]
     lambda_ = 0.9 if args.pretrained else 1e-3
-    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, normalize=normalize, lambda_=lambda_)
+    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=data_rep, normalize=normalize, lambda_=lambda_)
     model(imgs, labels, disable_recon=args.disable_recon)
 
     if not args.disable_cuda and torch.cuda.is_available():
@@ -124,7 +123,7 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
     
     if args.loss == 'MSE':
-        caps_loss = nn.MSELoss(reduction='sum')
+        caps_loss = MSELossScaled(1., 5.)
     else:
         #caps_loss = geodesic_loss()
         caps_loss = SE3GeodesicLoss.apply
@@ -209,8 +208,6 @@ if __name__ == '__main__':
                     imgs = 0.5*(1-contrast) + brightness + contrast*imgs
                     imgs = torch.clamp(imgs, 0., 1.)
 
-                # Scale xyz part
-                #labels[:,6:9] = labels[:,6:9] * 5.
 
                 imgs = Variable(imgs)
                 #labels = util.matMinRep_from_qvec(labels)
@@ -255,10 +252,9 @@ if __name__ == '__main__':
                 """
                 meter_loss.add(loss.data.cpu().item())
                 #print(loss.item()-dae_loss.item(), dae_loss.item())
-                if data_rep == 1:
-                    medErr, xyzErr = get_error(out_labels.data.cpu(), labels.data.cpu())
-                    medErrAvg.add(medErr)
-                    xyzErrAvg.add(xyzErr)
+                medErr, xyzErr = util.get_error(out_labels.data.cpu(), labels.data.cpu(), data_rep)
+                medErrAvg.add(medErr)
+                xyzErrAvg.add(xyzErr)
                 if not args.disable_recon:
                     #unsup_loss = capsloss(out_labels_unsup.view(labels_unsup.shape[0], -1)[:,:labels_unsup.shape[1]], labels_unsup)
                     #meter_loss_unsup.add(unsup_loss.data)
@@ -274,7 +270,8 @@ if __name__ == '__main__':
             test_loss = 0
             test_loss_recon = 0
             model.eval()
-            #model.batchnorm1d.training = True
+            if data_rep==0:
+                model.target_decoder.training = True
             optimizer.zero_grad()
             torch.cuda.empty_cache()
             with torch.no_grad():

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 import torch.nn as nn
 import numpy.linalg as linalg
+import pyrr
 #from helperFunctions import eps
 eps = 1e-6
 
@@ -36,7 +37,7 @@ def get_R(v):
     if theta < eps:
         R = np.eye(3)
     else:
-        v = v / theta
+        v = v / float(theta)
         V = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
         R = np.eye(3) + np.sin(theta) * V + (1 - np.cos(theta)) * np.dot(V, V)
     return R
@@ -51,8 +52,10 @@ def get_error(yhat, ygt):
         v1 = ygt[i,:3]
         v2 = yhat[i,:3]
         # get correponding rotation matrices
-        R1 = get_R(v1)
-        R2 = get_R(v2)
+        R1 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v1))
+        R2 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v2))
+        #R1 = get_R(v1)
+        #R2 = get_R(v2)
         # compute \|log(R_1^T R_2)\|_F/\sqrt(2) using Rodrigues' formula
         R = np.dot(R1.T, R2)
         tR = np.trace(R)
