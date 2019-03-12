@@ -4,7 +4,7 @@ Created on Jan 14, 2019
 @author: jens
 '''
 
-from capsnet import MSELossScaled, CapsNet
+from capsnet import MSELossWeighted, CapsNet
 import util
 
 import torch
@@ -60,13 +60,16 @@ if __name__ == '__main__':
     """
     Load training data
     """
-    data_rep = 0 if args.loss == 'MSE' else 1
+    #data_rep = 0 if args.loss == 'MSE' else 1
     if args.dataset == 'images':
-        train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=data_rep)
-        test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=data_rep)
+        train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
+        test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
     elif args.dataset == 'three_dot':
         train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+    elif args.dataset == 'three_dot_3d':
+        train_dataset = util.myTest(width=50, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
+        test_dataset = util.myTest(width=50, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
     else:
         train_dataset = util.myTest(width=20, sz=5000, img_type=args.dataset) #, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
@@ -92,7 +95,7 @@ if __name__ == '__main__':
     imgs = imgs[:2]
     labels = labels[:2]
     lambda_ = 0.9 if args.pretrained else 1e-3
-    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=data_rep, normalize=normalize, lambda_=lambda_)
+    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=args.loss, normalize=normalize, lambda_=lambda_)
     model(imgs, labels, disable_recon=args.disable_recon)
 
     if not args.disable_cuda and torch.cuda.is_available():
@@ -123,7 +126,7 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
     
     if args.loss == 'MSE':
-        caps_loss = MSELossScaled(1., 5.)
+        caps_loss = MSELossWeighted(torch.ones(labels.size(1)).cuda())
     else:
         #caps_loss = geodesic_loss()
         caps_loss = SE3GeodesicLoss.apply
@@ -252,7 +255,7 @@ if __name__ == '__main__':
                 """
                 meter_loss.add(loss.data.cpu().item())
                 #print(loss.item()-dae_loss.item(), dae_loss.item())
-                medErr, xyzErr = util.get_error(out_labels.data.cpu(), labels.data.cpu(), data_rep)
+                medErr, xyzErr = util.get_error(out_labels.data.cpu(), labels.data.cpu())
                 medErrAvg.add(medErr)
                 xyzErrAvg.add(xyzErr)
                 if not args.disable_recon:
@@ -270,7 +273,7 @@ if __name__ == '__main__':
             test_loss = 0
             test_loss_recon = 0
             model.eval()
-            if data_rep==0:
+            if args.loss=='MSE':
                 model.target_decoder.training = True
             optimizer.zero_grad()
             torch.cuda.empty_cache()
@@ -284,9 +287,6 @@ if __name__ == '__main__':
         
                     _,imgs, labels = data
                     
-                    # Scale xyz part
-                    labels[:,6:9] = labels[:,6:9] * 5.
-        
                     imgs = Variable(imgs)
                     #labels = util.matMinRep_from_qvec(labels)
                     if not args.disable_cuda:

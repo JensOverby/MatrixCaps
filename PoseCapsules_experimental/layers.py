@@ -120,6 +120,9 @@ class CapsuleLayer(nn.Module):
         self.do_sort = 0
         if self.voting.get('sort') != None:
             self.do_sort = self.voting['sort']
+        self.do_add = False
+        if self.voting.get('add') != None:
+            self.do_add = True
         self.type = 1
 
         if self.voting['type'] == 'standard':
@@ -203,21 +206,30 @@ class CapsuleLayer(nn.Module):
             x = x.view(x_sh[0]*x_sh[1], x_sh[2], x_sh[3], x_sh[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
 
             if self.do_sort:
+                """ Create Keys """
                 shp = self.conv.weight.data.shape
                 mean_weight = self.conv.weight.data.view(shp[0],shp[1],-1).mean(2, keepdim=True).unsqueeze(-1).expand(self.conv.weight.size())
                 corr_weight = (self.conv.weight.data - mean_weight)
                 del mean_weight
+                
+                """ Normalize keys, so high contrast keys don't contribute more than low contrast keys """
                 norm = corr_weight.view(shp[0],shp[1],-1).norm(p=1, dim=2, keepdim=True).unsqueeze(-1)
                 norm_weight = corr_weight / norm
                 del corr_weight
                 del norm
+                
+                """ Offset x, so it is distributed with a mean of zero """
                 mean_x = x.data.view(x.size(0),x.size(1),-1).mean(dim=2, keepdim=True).unsqueeze(-1)
                 corr_x = x.data - mean_x
                 del mean_x
-                
+
+                """ Convolve x """
                 x = self.conv(x)
+                
+                """ Convolve coor_x - Try to fit keys """
                 corr_x = F.conv2d(corr_x, norm_weight, None, self.conv.stride, self.conv.padding, self.conv.dilation, 1)
                 del norm_weight
+                
                 #a_sort = corr_x.norm(p=2, dim=1).view(x_sh[0],-1).sort(1, descending=True)[1]
                 a_sort = corr_x.view(x.size(0), self.output_dim, self.h, -1).norm(p=1, dim=2).norm(p=2, dim=1).sort(1, descending=True)[1]
                 #a_sort = corr_x.view(x_sh[0], self.output_dim, self.h, -1).norm(p=1, dim=2).max(dim=1)[0].sort(1, descending=True)[1]
@@ -226,11 +238,27 @@ class CapsuleLayer(nn.Module):
                 a_sort = a_sort[:,None,:].repeat(1,x.shape[1],1)
                 #a_sort = a_sort.view(x_sh[0],self.output_dim,1,-1).repeat(1,1,self.h,1).view(x.shape[0],x.shape[1],-1)
                 x = x.view(x.size(0), self.output_dim, -1, x.size(-2), x.size(-1))
-                x[:,:,6:8,:,:] = x[:,:,6:8,:,:] + self.add * self.scale
+
+                if self.do_add:
+                    x[:,:,:2,:,:] = x[:,:,:2,:,:] + self.add * self.scale
                 #x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort*2,None]
                 #idx = torch.randperm(self.do_sort*2)
                 #x = x[:,:,idx,:][:,:,:self.do_sort,:]
-                x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort,None]
+                x_sorted = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)
+                
+                best = x_sorted[:,:,:self.do_sort,None]
+                rest = x_sorted[:,:,self.do_sort:,None]
+                idx_lucky = torch.randperm(rest.size(2))[:int(self.do_sort*0.25)]
+                x = torch.cat([best,rest[:,:,idx_lucky,:]], dim=2)
+                
+                #x = x_sorted[:,:,:self.do_sort,None]
+                
+                #x = x_sorted[:,:,:self.do_sort*2,None]
+                #idx = torch.randperm(self.do_sort*2)
+                #x = x[:,:,idx,:][:,:,:self.do_sort,:]
+
+
+                
                 del a_sort
             else:
                 x = self.conv(x)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y

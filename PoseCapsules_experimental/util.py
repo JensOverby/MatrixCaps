@@ -10,6 +10,7 @@ import torch
 from torch.autograd import Variable
 import torch.utils.data as data
 import random
+from scipy.linalg._flapack import dsfrk
 random.seed(1991)
 from PIL import Image
 import math
@@ -101,9 +102,9 @@ def split_in_channels(imgs):
     return imgs_stereo
 
 class MyImageFolder(datasets.ImageFolder):
-    def __init__(self, root, transform=None, target_transform=None, data_rep=0):
+    def __init__(self, root, transform=None, target_transform=None, data_rep='MSE'):
         super(MyImageFolder, self).__init__(root, transform, target_transform)
-        self.data_rep = data_rep
+        self.data_rep = 0 if data_rep == 'MSE' else 1
 
     def __getitem__(self, index):
         path, target = self.samples[index]
@@ -287,7 +288,7 @@ class myTest(data.Dataset):
                 else:
                     find_max_min = True
                 for _ in range(sz):
-                    img = torch.zeros(width,width,3)
+                    img = torch.zeros(3, width,width)
 
                     if rnd:
                         x_rot = random.random()*2.0*math.pi
@@ -299,7 +300,7 @@ class myTest(data.Dataset):
                         x_rot = R
                         y_rot = R
                         z_rot = R
-                        xyz = pyrr.vector3.create(math.cos(R)*5 + 2.5, math.sin(R)*5 + 2.5, 5.0)
+                        xyz = pyrr.vector3.create(math.cos(R)*5 + 2.5, math.sin(R)*5 + 2.5, 0.0)
                         R += 0.063
 
                     euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
@@ -313,9 +314,9 @@ class myTest(data.Dataset):
                     green = BB[2] + 1.0*scale
                     blue = CC[2] + 1.0*scale
                     
-                    img[int(AA[0]), int(AA[1]),0] = red
-                    img[int(BB[0]), int(BB[1]),1] = green
-                    img[int(CC[0]), int(CC[1]),2] = blue
+                    img[0, int(AA[0]), int(AA[1])] = red
+                    img[1, int(BB[0]), int(BB[1])] = green
+                    img[2, int(CC[0]), int(CC[1])] = blue
 
                     if find_max_min:
                         if max([red,green,blue]) > self.max_z:
@@ -328,7 +329,7 @@ class myTest(data.Dataset):
                     #angle = rot.angle%math.pi
                     #if modulo%2 == 1:
                     #    axis *= -1
-                    target = torch.tensor([xyz[0], xyz[1], xyz[2], mat[0,0], mat[0,1],mat[0,2],mat[1,0],mat[1,1],mat[1,2]])
+                    target = torch.tensor([mat[0,0], mat[0,1],mat[0,2],mat[1,0],mat[1,1],mat[1,2], xyz[0], xyz[1], xyz[2], 1.0])
                     #target[:3] = (target[:3] - 2.5) / (5./2.) - 1 # scale to {-1,1}
                     self.train_data.append(img)
                     self.train_labels.append(target)
@@ -446,31 +447,37 @@ def load_pretrained(model, optimizer, model_number, forced_lr, is_cuda, path="./
                         state[k] = v.cuda()
 
 # function to get angle error between gt and predicted viewpoints
-def get_error(yhat, ygt, data_rep):
-    xyz_idx = 6 if data_rep==0 else 3
-    N = ygt.shape[0]
-    az_error = np.zeros(N)
-    for i in range(N):
-        # read the 3-dim axis-angle vectors
-        if data_rep==0:
-            R1 = np.stack([ygt[i,:3], ygt[i,3:6], np.cross(ygt[i,:3],ygt[i,3:6])])
-            R2 = np.stack([yhat[i,:3], yhat[i,3:6], np.cross(yhat[i,:3],yhat[i,3:6])])
-        else:
-            v1 = ygt[i,:3]
-            v2 = yhat[i,:3]
-            # get correponding rotation matrices
-            R1 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v1))
-            R2 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v2))
-        #R1 = get_R(v1)
-        #R2 = get_R(v2)
-        # compute \|log(R_1^T R_2)\|_F/\sqrt(2) using Rodrigues' formula
-        R = np.dot(R1.T, R2)
-        tR = np.trace(R)
-        theta = np.arccos(np.clip(0.5*(tR-1), -1.0, 1.0))   # clipping to avoid numerical issues
-        atheta = np.abs(theta)
-        # print('i:{0}, tR:{1}, theta:{2}'.format(i, tR, theta, atheta))
-        az_error[i] = np.rad2deg(atheta)
-    medErr = np.median(az_error)
-    xyzErr = np.linalg.norm(yhat[:,xyz_idx:] - ygt[:,xyz_idx:], ord=1, axis=1)
-    xyzErr = np.median(xyzErr)
-    return medErr, xyzErr
+def get_error(yhat, ygt):
+    if ygt.size(1) == 4:
+        error = yhat - ygt
+        return error[:,2:].median(), error[:,:2].median()
+    else:
+        xyz_idx = 6 if ygt.size(1)==10 else 3
+        N = ygt.shape[0]
+        az_error = np.zeros(N)
+        for i in range(N):
+            # read the 3-dim axis-angle vectors
+            if ygt.size(1)==10:
+                # MSE
+                R1 = np.stack([ygt[i,:3], ygt[i,3:6], np.cross(ygt[i,:3],ygt[i,3:6])])
+                R2 = np.stack([yhat[i,:3], yhat[i,3:6], np.cross(yhat[i,:3],yhat[i,3:6])])
+            else:
+                # GEO
+                v1 = ygt[i,:3]
+                v2 = yhat[i,:3]
+                # get correponding rotation matrices
+                R1 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v1))
+                R2 = pyrr.Matrix33.from_quaternion(pyrr.Quaternion.from_axis(v2))
+            #R1 = get_R(v1)
+            #R2 = get_R(v2)
+            # compute \|log(R_1^T R_2)\|_F/\sqrt(2) using Rodrigues' formula
+            R = np.dot(R1.T, R2)
+            tR = np.trace(R)
+            theta = np.arccos(np.clip(0.5*(tR-1), -1.0, 1.0))   # clipping to avoid numerical issues
+            atheta = np.abs(theta)
+            # print('i:{0}, tR:{1}, theta:{2}'.format(i, tR, theta, atheta))
+            az_error[i] = np.rad2deg(atheta)
+        medErr = np.median(az_error)
+        xyzErr = np.linalg.norm(yhat[:,xyz_idx:] - ygt[:,xyz_idx:], ord=1, axis=1)
+        xyzErr = np.median(xyzErr)
+        return medErr, xyzErr
