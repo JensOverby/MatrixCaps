@@ -13,6 +13,7 @@ import sys
 sys.path.append("../DynamicRouting")
 import layers
 import math
+from batchrenorm import BatchRenorm
 
 class MSELossWeighted(nn.Module):
     def __init__(self, weight):
@@ -20,8 +21,8 @@ class MSELossWeighted(nn.Module):
         self.weight = weight
         
     def forward(self, input, target):
-        pct_var = (input-target)**2
-        out = pct_var * self.weight.expand_as(target)
+        pct_var = input-target
+        out = (pct_var * self.weight.expand_as(target)) ** 2
         loss = out.sum() 
         return loss        
 
@@ -44,24 +45,31 @@ class StoreObject():
 
 
 class StoreLayer(nn.Module):
-    def __init__(self, container):
+    def __init__(self, container, do_clone=True):
         super(StoreLayer, self).__init__()
         self.container = container
-        #self.not_initialized = True
+        self.do_clone = do_clone
         
     def forward(self, x):
-        self.container.value = x.clone()
+        if self.do_clone:
+            self.container.value = x.clone()
+        else:
+            self.container.value = x
         return x
 
 class ConcatLayer(nn.Module):
-    def __init__(self, container, channel_dimension):
+    def __init__(self, container, channel_dimension, do_clone=True):
         super(ConcatLayer, self).__init__()
         self.channel_dimension = channel_dimension
         self.container = container
+        self.do_clone = do_clone
         
     def forward(self, x):
         y = torch.cat([self.container.value, x], self.channel_dimension)
-        self.container.value = y.clone()
+        if self.do_clone:
+            self.container.value = y.clone()
+        else:
+            self.container.value = y
         return y
 
 class BranchLayer(nn.Module):
@@ -136,40 +144,88 @@ class CapsNet(nn.Module):
             layer_list['conv4'] = layers.CapsuleLayer(output_dim=1, h=16, num_routing=3, voting={'type': 'standard'})
             """
         elif img_shape[-1] == 400:
+
+            """
+            --lr 1.25e-3
+            """
+            
+            same_padding = layers.calc_same_padding(img_shape[-1], k=5, s=1)
+
+            channels = img_shape[0]
+            layer_list['conv1'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=5, stride=1, padding=same_padding, bias=False)
+            layer_list['bn1'] = BatchRenorm(num_features=4) #, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+
+            self.contain = StoreObject()
+            layer_list['store'] = StoreLayer(self.contain, False)
+
+            channels = 4
+
+            layer_list['conv2'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=5, stride=1, padding=same_padding, bias=False)
+            layer_list['bn2'] = BatchRenorm(num_features=4) #, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu2'] = nn.ReLU(inplace=True)
+            layer_list['concat2a'] = ConcatLayer(self.contain, 1, False)
+            channels += 4
+
+            layer_list['conv3'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=5, stride=1, padding=same_padding, bias=False)
+            layer_list['bn3'] = BatchRenorm(num_features=4) #, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu3'] = nn.ReLU(inplace=True)
+            layer_list['concat3a'] = ConcatLayer(self.contain, 1, False)
+            channels += 4
+
+            layer_list['conv4'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=5, stride=1, padding=same_padding, bias=False)
+            layer_list['bn4'] = BatchRenorm(num_features=4) #, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu4'] = nn.ReLU(inplace=True)
+            layer_list['concat4a'] = ConcatLayer(self.contain, 1, False)
+            
+            """
+            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+            """
+            
+            layer_list['conv2prim'] = layers.ConvToPrim()
+            
+            layer_list['prim1'] = layers.CapsuleLayer(output_dim=2, h=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 15, 'padding': 7})
+
+            """ Create skip attachment layer and create skip pathway by branching the standard pathway in two """
+            skip_attachment_layer = nn.Sequential(OrderedDict({'sort': layers.CapsuleLayer(output_dim=4, h=12, num_routing=3,
+                                    voting={'type': 'Conv2d', 'stride': 1, 'sort': 256, 'add': 1, 'kernel_size': 9, 'padding': 4}), 'p2c': layers.PrimToCaps()}))
+            skip_pathway = StoreObject()
+            layer_list['prim2'] = BranchLayer(
+                                    layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 9, 'padding': 4}),
+                                    skip_attachment_layer, skip_pathway)
+
+            layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'sort': 256, 'add': 1, 'stride': 2, 'kernel_size': 9, 'padding': 4})
+            layer_list['prim2caps'] = layers.PrimToCaps()
+            
+            layer_list['caps1'] = layers.CapsuleLayer(output_dim=40, h=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps2'] = layers.CapsuleLayer(output_dim=32, h=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['concat1'] = ConcatLayer(skip_pathway, 1)
+            layer_list['caps3'] = layers.CapsuleLayer(output_dim=24, h=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['concat2'] = ConcatLayer(skip_pathway, 1)
+            decoder_input_atoms = 10
+            layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, h=decoder_input_atoms, num_routing=3, voting={'type': 'standard'})
+
+            """
+            same_padding = layers.calc_same_padding(400, k=15, s=1)
             sz = layers.calc_out(100, kernel=7, stride=2, padding=3)
             sz = layers.calc_out(sz, kernel=7, stride=1)
             sz = layers.calc_out(sz, kernel=7, stride=2, padding=3)
             sz = layers.calc_out(sz, kernel=7, stride=1)
-            
-            """
-            --lr 1.25e-3
-            """
-            #100->50->44->22->16
             layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
             layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu1'] = nn.ReLU(inplace=True)
             layer_list['conv2prim'] = layers.ConvToPrim()
-            
             layer_list['prim1'] = layers.CapsuleLayer(output_dim=2, h=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 15, 'padding': 7})
             layer_list['prim2'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 9, 'padding': 4})
             layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'sort': 512, 'stride': 2, 'kernel_size': 9, 'padding': 4})
             layer_list['prim2caps'] = layers.PrimToCaps()
-            
             layer_list['caps1'] = layers.CapsuleLayer(output_dim=40, h=12, num_routing=3, voting={'type': 'standard'})
             layer_list['dense_caps2'] = DenseLayer(layers.CapsuleLayer(output_dim=32, h=12, num_routing=3, voting={'type': 'standard'}), 1)
             layer_list['dense_caps3'] = DenseLayer(layers.CapsuleLayer(output_dim=24, h=12, num_routing=3, voting={'type': 'standard'}), 1)
             decoder_input_atoms = 10
             layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, h=decoder_input_atoms, num_routing=3, voting={'type': 'standard'})
-            """
-            layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=16, num_routing=3, voting={'type': 'Conv2d', 'sort': 256, 'stride': 2, 'kernel_size': 7, 'padding': 0})
-            layer_list['prim2matrix'] = layers.PrimToMatrixPrim()
-            layer_list['matprim'] = layers.CapsuleLayer(output_dim=4, h=4, num_routing=0, voting={'type': 'prim_matrix'})
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=64, h=4, num_routing=3, voting={'type': 'matrix', 'lambda': lambda_})
-            layer_list['caps2'] = layers.CapsuleLayer(output_dim=64, h=4, num_routing=3, voting={'type': 'matrix', 'lambda': lambda_})
-            layer_list['caps3'] = layers.CapsuleLayer(output_dim=64, h=4, num_routing=3, voting={'type': 'matrix', 'lambda': lambda_})
-            layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, h=4, num_routing=3, voting={'type': 'matrix', 'lambda': lambda_})
-            decoder_input_atoms = 16
-            layer_list['capsToOut'] = layers.MatrixToOut(decoder_input_atoms)
             """
         elif img_shape[-1] == 401:
             sz = layers.calc_out(100, kernel=7, stride=2, padding=3)

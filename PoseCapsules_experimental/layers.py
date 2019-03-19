@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 import math
+from batchrenorm import BatchRenorm
 
 votes_t_shape = [3, 0, 1, 2, 4, 5]
 r_t_shape = [1, 2, 3, 0, 4, 5]
@@ -12,11 +13,24 @@ ln_2pi = math.log(2*math.pi)
 def calc_out(input_, kernel=1, stride=1, padding=0, dilation=1):
     return int((input_ + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
 
+def calc_same_padding(i, k=1, s=1, d=1, transposed=False):
+    return int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
+"""
+    o = (i + 2*p - k - (k-1)*(d-1)) / s + 1
+    s*o = (i + 2*p - k - (k-1)*(d-1)) + s
+    s*o - s = i + 2*p - k - (k-1)*(d-1)
+    s*o - s - i + k + (k-1)*(d-1) = 2*p
+    (s(o-1) - i + k + (k-1)*(d-1)) / 2 = p
+"""
+
+
+"""
 def calc_same_padding(input_, kernel=1, stride=1, dilation=1, transposed=False):
     if transposed:
         return (dilation*(kernel-1) + 1) // 2 - 1, input_ // (1./stride)
     else:
         return (dilation*(kernel-1) + 1) // 2, input_ // stride
+"""
 
 def make_decoder(dec_list):
     model = nn.Sequential()
@@ -206,7 +220,7 @@ class CapsuleLayer(nn.Module):
             x = x.view(x_sh[0]*x_sh[1], x_sh[2], x_sh[3], x_sh[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
 
             if self.do_sort:
-                """ Create Keys """
+                """ Create Keys and center these with a mean of zero """
                 shp = self.conv.weight.data.shape
                 mean_weight = self.conv.weight.data.view(shp[0],shp[1],-1).mean(2, keepdim=True).unsqueeze(-1).expand(self.conv.weight.size())
                 corr_weight = (self.conv.weight.data - mean_weight)
@@ -218,7 +232,7 @@ class CapsuleLayer(nn.Module):
                 del corr_weight
                 del norm
                 
-                """ Offset x, so it is distributed with a mean of zero """
+                """ Center x with a mean of zero """
                 mean_x = x.data.view(x.size(0),x.size(1),-1).mean(dim=2, keepdim=True).unsqueeze(-1)
                 corr_x = x.data - mean_x
                 del mean_x

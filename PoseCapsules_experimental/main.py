@@ -29,7 +29,7 @@ np.random.seed(1991)
 torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
-#import readchar
+
 
 if __name__ == '__main__':
     torch.cuda.empty_cache()
@@ -61,6 +61,7 @@ if __name__ == '__main__':
     Load training data
     """
     #data_rep = 0 if args.loss == 'MSE' else 1
+    loss_weight = torch.tensor([1.,1.,1.,1.,1.,1.,5.,5.,5.,1.])
     if args.dataset == 'images':
         train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
         test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
@@ -82,9 +83,9 @@ if __name__ == '__main__':
     _, imgs, labels = sup_iterator.next()
     sup_iterator = train_loader.__iter__()
 
-
-
-
+    loss_weight = torch.ones(labels.size(1))
+    if args.dataset == 'images':
+        loss_weight[6:9] *= 5
 
     """
     Setup model, load it to CUDA and make JIT compilation
@@ -126,7 +127,8 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
     
     if args.loss == 'MSE':
-        caps_loss = MSELossWeighted(torch.ones(labels.size(1)).cuda())
+        caps_loss = MSELossWeighted(torch.tensor([1.,1.,1.,1.,1.,1.,5.,5.,5.,1.]).cuda())
+        #caps_loss = MSELossWeighted(torch.ones(labels.size(1)).cuda())
     else:
         #caps_loss = geodesic_loss()
         caps_loss = SE3GeodesicLoss.apply
@@ -369,3 +371,14 @@ if __name__ == '__main__':
                 if not args.disable_cuda:
                     model.cuda()
                 torch.save(optimizer.state_dict(), "./weights/optim.pth")
+                
+                """
+                kaj = model.state_dict()
+                kaj.keys()
+                kaj.pop('capsules.bn1.weight')
+                kaj.pop('capsules.bn1.bias')
+                kaj.pop('capsules.bn1.running_mean')
+                kaj.pop('capsules.bn1.running_var')
+                kaj.pop('capsules.bn1.num_batches_tracked')
+                torch.save(kaj, "./weights/model_kaj.pth")
+                """
