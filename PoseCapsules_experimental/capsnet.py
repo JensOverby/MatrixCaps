@@ -306,9 +306,9 @@ class CapsNet(nn.Module):
             layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 9, 'padding': 4})
             layer_list['prim2caps'] = layers.PrimToCaps()
             
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=8, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['dense_caps2'] = DenseLayer(layers.CapsuleLayer(output_dim=6, h=12, num_routing=3, voting={'type': 'standard'}), 1)
-            layer_list['dense_caps3'] = DenseLayer(layers.CapsuleLayer(output_dim=4, h=12, num_routing=3, voting={'type': 'standard'}), 1)
+            layer_list['caps1'] = layers.CapsuleLayer(output_dim=32, h=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['dense_caps2'] = DenseLayer(layers.CapsuleLayer(output_dim=32, h=12, num_routing=3, voting={'type': 'standard'}), 1)
+            layer_list['dense_caps3'] = DenseLayer(layers.CapsuleLayer(output_dim=16, h=12, num_routing=3, voting={'type': 'standard'}), 1)
             decoder_input_atoms = 10
             layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, h=decoder_input_atoms, num_routing=3, voting={'type': 'standard'})
 

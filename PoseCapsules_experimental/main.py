@@ -63,7 +63,6 @@ if __name__ == '__main__':
     Load training data
     """
     #data_rep = 0 if args.loss == 'MSE' else 1
-    loss_weight = torch.tensor([1.,1.,1.,1.,1.,1.,5.,5.,5.,1.])
     if args.dataset == 'images':
         train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
         test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
@@ -351,8 +350,8 @@ if __name__ == '__main__':
             scheduler.step(loss)
             
             layers.clamp -= 0.02
-            if layers.clamp < 0.01:
-                layers.clamp = 0.01
+            if layers.clamp < 0:
+                layers.clamp = 0.0
 
             #if epoch==3:
             #    for param_group in optimizer.param_groups:
