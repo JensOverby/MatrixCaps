@@ -9,6 +9,7 @@ votes_t_shape = [3, 0, 1, 2, 4, 5]
 r_t_shape = [1, 2, 3, 0, 4, 5]
 eps = 1e-10
 ln_2pi = math.log(2*math.pi)
+clamp = 1.0
 
 def calc_out(input_, kernel=1, stride=1, padding=0, dilation=1):
     return int((input_ + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
@@ -116,6 +117,75 @@ class MyConv(nn.Module):
         poses = poses.view(x_sh[0], self.out_channels, w, w)
         return poses
 
+class ReduceCapsConv(nn.Module):
+    def __init__(self, output_dim, h, kernel_size, stride, padding, out_caps, rnd_out_caps, do_add):
+        super(ReduceCapsConv, self).__init__()
+        self.output_dim = output_dim
+        self.h = h
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.out_caps = out_caps
+        self.rnd_out_caps = rnd_out_caps
+        self.do_add = do_add
+        
+    def init(self, x):
+        self.conv = nn.Conv2d(in_channels=x.size(2),
+                                       out_channels=self.output_dim * self.h,
+                                       kernel_size=self.kernel_size,
+                                       stride=self.stride,
+                                       padding=self.padding,
+                                       bias=False)
+        nn.init.normal_(self.conv.weight.data, mean=0,std=0.1)
+        w = self.conv(x.data.view(x.size(0)*x.size(1), x.size(2), x.size(3), x.size(4))).size(-1)
+        self.add = nn.Parameter(torch.Tensor([[i / w, j / w] for i in range(w) for j in range(w)]).permute(1,0).view(-1,w,w), requires_grad=False)
+        self.scale = nn.Parameter(torch.Tensor([50.]))
+        
+    def forward(self, x):
+        # Create Keys and center these with a mean of zero
+        shp = self.conv.weight.data.shape
+        mean_weight = self.conv.weight.data.view(shp[0],shp[1],-1).mean(2, keepdim=True).unsqueeze(-1).expand(self.conv.weight.size())
+        corr_weight = (self.conv.weight.data - mean_weight)
+        del mean_weight
+        
+        # Normalize keys, so high contrast keys don't contribute more than low contrast keys
+        norm = corr_weight.view(shp[0],shp[1],-1).norm(p=1, dim=2, keepdim=True).unsqueeze(-1)
+        norm_weight = corr_weight / norm
+        del corr_weight
+        del norm
+        
+        # Center x with a mean of zero
+        mean_x = x.data.view(x.size(0),x.size(1),-1).mean(dim=2, keepdim=True).unsqueeze(-1)
+        corr_x = x.data - mean_x
+        del mean_x
+
+        # Convolve x
+        x = self.conv(x)
+        
+        # Convolve coor_x - Try to fit keys
+        corr_x = F.conv2d(corr_x, norm_weight, None, self.conv.stride, self.conv.padding, self.conv.dilation, 1)
+        del norm_weight
+        
+        a_sort = corr_x.view(x.size(0), self.output_dim, self.h, -1).norm(p=1, dim=2).norm(p=2, dim=1).sort(1, descending=True)[1]
+        #del corr_x
+        a_sort = a_sort[:,None,:].repeat(1,x.shape[1],1)
+
+        if self.do_add:
+            x = x.view(x.size(0), self.output_dim, -1, x.size(-2), x.size(-1))
+            x[:,:,:2,:,:] = x[:,:,:2,:,:] + self.add * self.scale
+            
+        x_sorted = x.view(x.size(0),self.output_dim*self.h, -1).gather(2, a_sort)
+
+        del corr_x
+        del a_sort
+        
+        best = x_sorted[:,:,:self.out_caps,None]
+        rest = x_sorted[:,:,self.out_caps:,None]
+        idx_lucky = torch.randperm(rest.size(2))[:self.rnd_out_caps]
+        x = torch.cat([best,rest[:,:,idx_lucky,:]], dim=2)
+        
+        return x
+
 class CapsuleLayer(nn.Module):
     
     """
@@ -137,7 +207,9 @@ class CapsuleLayer(nn.Module):
         self.do_add = False
         if self.voting.get('add') != None:
             self.do_add = True
-        self.type = 1
+
+        #self.activate_bn = None
+        self.activate_bn = BatchRenorm(num_features=self.output_dim, affine=True)
 
         if self.voting['type'] == 'standard':
             self.weight = nn.Parameter(torch.Tensor(x.size(1), x.size(2), self.output_dim * self.h, 1, 1))
@@ -161,39 +233,23 @@ class CapsuleLayer(nn.Module):
             self.capsules_activation = nn.Conv2d(in_channels=x.size(1), out_channels=self.output_dim, kernel_size=1, stride=1, bias=True)
             self.type = 3
         elif self.voting['type'] == 'Conv2d':
-            x = x.data
-            self.conv = nn.Conv2d(in_channels=x.size(2),
-                                           out_channels=self.output_dim * self.h,
-                                           kernel_size=self.voting['kernel_size'],
-                                           stride=self.voting['stride'],
-                                           padding=self.voting['padding'],
-                                           bias=False)
-            self.bias = nn.Parameter(torch.Tensor(self.output_dim, self.h, 1, 1))
-            nn.init.constant_(self.bias.data, val=0.1)
             if self.do_sort:
-                #self.avg_conv_weight = torch.Tensor(self.conv.weight.size()).fill_(1/(self.conv.kernel_size[0]*self.conv.kernel_size[1])).cuda(self.device)
-                w = self.conv(x.data.view(x.size(0)*x.size(1), x.size(2), x.size(3), x.size(4))).size(-1)
-                self.add = nn.Parameter(torch.Tensor([[i / w, j / w] for i in range(w) for j in range(w)]).permute(1,0).view(-1,w,w), requires_grad=False)
-                self.scale = nn.Parameter(torch.Tensor([50.]))
-        elif self.voting['type'] == 'ConvTranspose2d':
-            self.conv = nn.ConvTranspose2d(in_channels=x.size(2),
-                                           out_channels=self.output_dim * self.h,
-                                           kernel_size=self.voting['kernel_size'],
-                                           stride=self.voting['stride'],
-                                           padding=self.voting['padding'],
-                                           bias=False)#.cuda(self.device)
+                self.conv = ReduceCapsConv(self.output_dim, self.h, self.voting['kernel_size'], self.voting['stride'], self.voting['padding'], 
+                                     self.do_sort, int(self.do_sort*0.25), self.do_add)
+                self.conv.init(x)
+            else:
+                self.conv = nn.Conv2d(in_channels=x.size(2),
+                                               out_channels=self.output_dim * self.h,
+                                               kernel_size=self.voting['kernel_size'],
+                                               stride=self.voting['stride'],
+                                               padding=self.voting['padding'],
+                                               bias=False)
+                nn.init.normal_(self.conv.weight.data, mean=0,std=0.1)
             self.bias = nn.Parameter(torch.Tensor(self.output_dim, self.h, 1, 1))
             nn.init.constant_(self.bias.data, val=0.1)
-        elif self.voting['type'] == 'experimental':
-            self.conv = MyConv(in_channels=x.size(2),
-                                           out_channels=self.output_dim * self.h,
-                                           kernel_size=self.voting['kernel_size'],
-                                           stride=self.voting['stride'])#.cuda(self.device)
+            self.type = 1
         else:
             raise NotImplementedError('Convolutional type not recognized. Must be: Conv2d, Conv3d, ConvTranspose2d, or ConvTranspose3d"')
-
-        if self.type == 1:
-            nn.init.normal_(self.conv.weight.data, mean=0,std=0.1)
 
         self.not_initialized = False
 
@@ -213,76 +269,31 @@ class CapsuleLayer(nn.Module):
             biases_replicated = self.bias.repeat([1,1,x.size(-2),x.size(-1)])
             logit_shape = list(votes.size())
             logit_shape.pop(3)                                          # batch_size, input_dim, output_dim, dim_x, dim_y
-            return dynamic_routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing)
+            return dynamic_routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing, activate_bn=self.activate_bn)
         
         elif self.type == 1:
             x_sh = x.size()                                             # batch_size, input_dim, input_atoms, dim_x, dim_y
             x = x.view(x_sh[0]*x_sh[1], x_sh[2], x_sh[3], x_sh[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
 
-            if self.do_sort:
-                """ Create Keys and center these with a mean of zero """
-                shp = self.conv.weight.data.shape
-                mean_weight = self.conv.weight.data.view(shp[0],shp[1],-1).mean(2, keepdim=True).unsqueeze(-1).expand(self.conv.weight.size())
-                corr_weight = (self.conv.weight.data - mean_weight)
-                del mean_weight
-                
-                """ Normalize keys, so high contrast keys don't contribute more than low contrast keys """
-                norm = corr_weight.view(shp[0],shp[1],-1).norm(p=1, dim=2, keepdim=True).unsqueeze(-1)
-                norm_weight = corr_weight / norm
-                del corr_weight
-                del norm
-                
-                """ Center x with a mean of zero """
-                mean_x = x.data.view(x.size(0),x.size(1),-1).mean(dim=2, keepdim=True).unsqueeze(-1)
-                corr_x = x.data - mean_x
-                del mean_x
-
-                """ Convolve x """
-                x = self.conv(x)
-                
-                """ Convolve coor_x - Try to fit keys """
-                corr_x = F.conv2d(corr_x, norm_weight, None, self.conv.stride, self.conv.padding, self.conv.dilation, 1)
-                del norm_weight
-                
-                #a_sort = corr_x.norm(p=2, dim=1).view(x_sh[0],-1).sort(1, descending=True)[1]
-                a_sort = corr_x.view(x.size(0), self.output_dim, self.h, -1).norm(p=1, dim=2).norm(p=2, dim=1).sort(1, descending=True)[1]
-                #a_sort = corr_x.view(x_sh[0], self.output_dim, self.h, -1).norm(p=1, dim=2).max(dim=1)[0].sort(1, descending=True)[1]
-                #a_sort = corr_x.view(x_sh[0], self.output_dim, self.h, -1).norm(p=1, dim=2).view(x_sh[0],-1).sort(1, descending=True)[1]
-                del corr_x
-                a_sort = a_sort[:,None,:].repeat(1,x.shape[1],1)
-                #a_sort = a_sort.view(x_sh[0],self.output_dim,1,-1).repeat(1,1,self.h,1).view(x.shape[0],x.shape[1],-1)
-                x = x.view(x.size(0), self.output_dim, -1, x.size(-2), x.size(-1))
-
-                if self.do_add:
-                    x[:,:,:2,:,:] = x[:,:,:2,:,:] + self.add * self.scale
-                #x = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)[:,:,:self.do_sort*2,None]
-                #idx = torch.randperm(self.do_sort*2)
-                #x = x[:,:,idx,:][:,:,:self.do_sort,:]
-                x_sorted = x.view(x.size(0),x.size(1)*x.size(2),-1).gather(2, a_sort)
-                
-                best = x_sorted[:,:,:self.do_sort,None]
-                rest = x_sorted[:,:,self.do_sort:,None]
-                idx_lucky = torch.randperm(rest.size(2))[:int(self.do_sort*0.25)]
-                x = torch.cat([best,rest[:,:,idx_lucky,:]], dim=2)
-                
-                #x = x_sorted[:,:,:self.do_sort,None]
-                
-                #x = x_sorted[:,:,:self.do_sort*2,None]
-                #idx = torch.randperm(self.do_sort*2)
-                #x = x[:,:,idx,:][:,:,:self.do_sort,:]
-
-
-                
-                del a_sort
-            else:
-                x = self.conv(x)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+            x = self.conv(x)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
 
             votes = x.view(x_sh[0], -1, self.output_dim, self.h, x.size(-2), x.size(-1))
             biases_replicated = self.bias.repeat([1,1,x.size(-2),x.size(-1)])
             logit_shape = list(votes.size())
             logit_shape.pop(3)                                          # batch_size, input_dim, output_dim, dim_x, dim_y
-            return dynamic_routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing)
-        
+            routed = dynamic_routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing, activate_bn=self.activate_bn)
+            """
+            if self.do_sort:
+                routed_sorted = routed.norm(p=2, dim=2).norm(p=1, dim=1).view(routed.size(0),-1).sort(descending=True)[1]
+                sh = routed.size()
+                routed_sorted = routed.view(sh[0], sh[1], sh[2], -1).gather(3, routed_sorted[:,None,None,:].repeat(1, sh[1], sh[2], 1))
+                best = routed_sorted[:,:,:,:self.do_sort,None]
+                rest = routed_sorted[:,:,:,self.do_sort:,None]
+                idx_lucky = torch.randperm(rest.size(3))[:int(self.do_sort*0.25)]
+                routed = torch.cat([best,rest[:,:,:,idx_lucky,:]], dim=3)
+            """
+            return routed
+
         elif self.type == 2:
             poses, activations = x
             # poses:        batch_size, input_dim, hh
@@ -310,7 +321,7 @@ class CapsuleLayer(nn.Module):
             activations = torch.sigmoid(activations)
             return poses.view(sh[0], -1, self.h*self.h), activations.view(sh[0], -1)
 
-def dynamic_routing(votes, biases, logit_shape, num_routing):
+def dynamic_routing(votes, biases, logit_shape, num_routing, activate_bn):
     # votes: batch_size, input_dim, output_dim, h, (dim_x, dim_y)
     
     votes_trans = votes.permute(votes_t_shape)                      # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
@@ -325,12 +336,28 @@ def dynamic_routing(votes, biases, logit_shape, num_routing):
             preactivate_unrolled = route * votes_trans              # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
             preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, h, (dim_x, dim_y)
             preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, h, (dim_x, dim_y)
-            activation = _squash(preactivate)                       # squashing of "h" dimension
+            #activation = _squash(preactivate)                       # squashing of "h" dimension
+            
+            """ Squashing """
+            preactivate_length = preactivate.norm(p=2, dim=2)
+            bn = activate_bn.activate(preactivate_length, do_update=True)
+            bn = torch.sigmoid(bn)
+            bn = torch.clamp(bn, clamp, 1.0)
+            preactivate_norm = preactivate / preactivate_length.unsqueeze(2)
+            activation = bn.unsqueeze(2) * preactivate_norm
         else:
             preactivate_unrolled = route * votes_trans.data #_stopped      # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
             preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, h, (dim_x, dim_y)
             preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, h, (dim_x, dim_y)
-            activation = _squash(preactivate)                       # squashing of "h" dimension
+            #activation = _squash(preactivate)                       # squashing of "h" dimension
+
+            """ Squashing """
+            preactivate_length = preactivate.norm(p=2, dim=2)
+            bn = activate_bn.activate(preactivate_length, do_update=False)
+            bn = torch.sigmoid(bn)
+            bn = torch.clamp(bn, clamp, 1.0)
+            preactivate_norm = preactivate / preactivate_length.unsqueeze(2)
+            activation = bn.unsqueeze(2) * preactivate_norm
 
             act_3d = activation.unsqueeze_(1)                       # batch_size, 1, output_dim, h, (dim_x, dim_y)
             distances = torch.sum(votes.data * act_3d, dim=3)            # batch_size, input_dim, output_dim, (dim_x, dim_y)
@@ -342,6 +369,10 @@ def _squash(input_tensor):
     norm = torch.norm(input_tensor, p=2, dim=2, keepdim=True)
     norm_squared = norm * norm
     return (input_tensor / norm) * (norm_squared / (1 + norm_squared))
+
+
+""" "1/(1+np.exp(-x)) """
+
 
 def EM_routing(lambda_, V, a_, beta_v, beta_a, num_routing):
     # routing coefficient

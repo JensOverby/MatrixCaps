@@ -148,7 +148,7 @@ class CapsNet(nn.Module):
             """
             --lr 1.25e-3
             """
-            
+            """
             same_padding = layers.calc_same_padding(img_shape[-1], k=5, s=1)
 
             channels = img_shape[0]
@@ -177,12 +177,12 @@ class CapsNet(nn.Module):
             layer_list['bn4'] = BatchRenorm(num_features=4) #, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu4'] = nn.ReLU(inplace=True)
             layer_list['concat4a'] = ConcatLayer(self.contain, 1, False)
-            
             """
+            
             layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
             layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu1'] = nn.ReLU(inplace=True)
-            """
+            
             
             layer_list['conv2prim'] = layers.ConvToPrim()
             
@@ -190,17 +190,17 @@ class CapsNet(nn.Module):
 
             """ Create skip attachment layer and create skip pathway by branching the standard pathway in two """
             skip_attachment_layer = nn.Sequential(OrderedDict({'sort': layers.CapsuleLayer(output_dim=4, h=12, num_routing=3,
-                                    voting={'type': 'Conv2d', 'stride': 1, 'sort': 256, 'add': 1, 'kernel_size': 9, 'padding': 4}), 'p2c': layers.PrimToCaps()}))
+                                    voting={'type': 'Conv2d', 'stride': 1, 'sort': 256, 'kernel_size': 9, 'padding': 4}), 'p2c': layers.PrimToCaps()}))
             skip_pathway = StoreObject()
             layer_list['prim2'] = BranchLayer(
                                     layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 9, 'padding': 4}),
                                     skip_attachment_layer, skip_pathway)
 
-            layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'sort': 256, 'add': 1, 'stride': 2, 'kernel_size': 9, 'padding': 4})
+            layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'sort': 256, 'stride': 2, 'kernel_size': 9, 'padding': 4})
             layer_list['prim2caps'] = layers.PrimToCaps()
             
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=40, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['caps2'] = layers.CapsuleLayer(output_dim=32, h=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps1'] = layers.CapsuleLayer(output_dim=96, h=12, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps2'] = layers.CapsuleLayer(output_dim=48, h=12, num_routing=3, voting={'type': 'standard'})
             layer_list['concat1'] = ConcatLayer(skip_pathway, 1)
             layer_list['caps3'] = layers.CapsuleLayer(output_dim=24, h=12, num_routing=3, voting={'type': 'standard'})
             layer_list['concat2'] = ConcatLayer(skip_pathway, 1)

@@ -29,7 +29,7 @@ np.random.seed(1991)
 torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
-
+import layers
 
 if __name__ == '__main__':
     torch.cuda.empty_cache()
@@ -53,8 +53,10 @@ if __name__ == '__main__':
     parser.add_argument('--patience', type=int, default=20, metavar='N', help='Scheduler patience')
     parser.add_argument('--dataset', type=str, default='images', metavar='N', help='dataset options: images,three_dot_3d')
     parser.add_argument('--loss', type=str, default='MSE', metavar='N', help='loss options: MSE,GEO')
+    parser.add_argument('--clamp', type=float, default=0, metavar='N', help='Clamp activation')
     args = parser.parse_args()
     
+    layers.clamp = args.clamp
     time_dump = int(time.time())
 
     """
@@ -325,7 +327,7 @@ if __name__ == '__main__':
 
             """
             loss_relation = loss_recon/(loss-loss_recon)
-            if loss_relation > 0.25 and epoch>15:
+            if loss_relaparam_group['lr'] = tion > 0.25 and epoch>15:
                 fac = 0.25/loss_relation
                 print("Loss relation = {}. Recon-factor reduced from {} to {}".format(loss_relation, args.recon_factor, args.recon_factor*fac))
                 args.recon_factor *= fac
@@ -347,6 +349,10 @@ if __name__ == '__main__':
             Scheduler
             """
             scheduler.step(loss)
+            
+            layers.clamp -= 0.02
+            if layers.clamp < 0.01:
+                layers.clamp = 0.01
 
             #if epoch==3:
             #    for param_group in optimizer.param_groups:
