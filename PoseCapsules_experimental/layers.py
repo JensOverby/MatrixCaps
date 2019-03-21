@@ -336,28 +336,32 @@ def dynamic_routing(votes, biases, logit_shape, num_routing, activate_bn):
             preactivate_unrolled = route * votes_trans              # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
             preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, h, (dim_x, dim_y)
             preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, h, (dim_x, dim_y)
-            #activation = _squash(preactivate)                       # squashing of "h" dimension
+            activation = _squash(preactivate)                       # squashing of "h" dimension
             
             """ Squashing """
+            """
             preactivate_length = preactivate.norm(p=2, dim=2)
             bn = activate_bn.activate(preactivate_length, do_update=True)
             bn = torch.sigmoid(bn)
             bn = torch.clamp(bn, clamp, 1.0)
             preactivate_norm = preactivate / preactivate_length.unsqueeze(2)
             activation = bn.unsqueeze(2) * preactivate_norm
+            """
         else:
             preactivate_unrolled = route * votes_trans.data #_stopped      # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
             preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, h, (dim_x, dim_y)
             preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, h, (dim_x, dim_y)
-            #activation = _squash(preactivate)                       # squashing of "h" dimension
+            activation = _squash(preactivate)                       # squashing of "h" dimension
 
             """ Squashing """
+            """
             preactivate_length = preactivate.norm(p=2, dim=2)
             bn = activate_bn.activate(preactivate_length, do_update=False)
             bn = torch.sigmoid(bn)
             bn = torch.clamp(bn, clamp, 1.0)
             preactivate_norm = preactivate / preactivate_length.unsqueeze(2)
             activation = bn.unsqueeze(2) * preactivate_norm
+            """
 
             act_3d = activation.unsqueeze_(1)                       # batch_size, 1, output_dim, h, (dim_x, dim_y)
             distances = torch.sum(votes.data * act_3d, dim=3)            # batch_size, input_dim, output_dim, (dim_x, dim_y)

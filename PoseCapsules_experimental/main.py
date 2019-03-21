@@ -63,18 +63,20 @@ if __name__ == '__main__':
     Load training data
     """
     #data_rep = 0 if args.loss == 'MSE' else 1
-    if args.dataset == 'images':
-        train_dataset = util.MyImageFolder(root='../../data/train/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
-        test_dataset = util.MyImageFolder(root='../../data/test/', transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
-    elif args.dataset == 'three_dot':
+    loss_weight = None
+    if args.dataset == 'three_dot':
         train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
     elif args.dataset == 'three_dot_3d':
         train_dataset = util.myTest(width=50, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=50, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
     else:
-        train_dataset = util.myTest(width=20, sz=5000, img_type=args.dataset) #, transform=transforms.Compose([transforms.ToTensor(),]))
-        test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+        train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
+        test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
+        loss_weight = 1
+    #else:
+    #    train_dataset = util.myTest(width=20, sz=5000, img_type=args.dataset) #, transform=transforms.Compose([transforms.ToTensor(),]))
+    #    test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
@@ -84,9 +86,11 @@ if __name__ == '__main__':
     _, imgs, labels = sup_iterator.next()
     sup_iterator = train_loader.__iter__()
 
-    loss_weight = torch.ones(labels.size(1))
-    if args.dataset == 'images':
+    if loss_weight is not None:
+        loss_weight = torch.ones(labels.size(1))
         loss_weight[6:9] *= 5
+    else:
+        loss_weight = torch.ones(labels.size(1))
 
     """
     Setup model, load it to CUDA and make JIT compilation
