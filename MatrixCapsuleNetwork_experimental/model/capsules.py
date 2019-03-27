@@ -148,7 +148,7 @@ class ConvCaps(nn.Module):
 
     #torch.save(poses, 'poses.pt')
 
-    def forward(self, lambda_, poses, activations):
+    def forward(self, lambda_, poses, activations): # (self.b, self.C, self.w, self.w, hh)
         self.width_in = int(poses.shape[2])
         if self.K:
             self.w = int((self.width_in - self.K) / self.stride) + 1
