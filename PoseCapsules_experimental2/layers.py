@@ -242,9 +242,9 @@ class ConvCaps(nn.Module):
         if x.shape[-2] > 1:
             
             """ HACK """
-            kaj = x.view(x.shape[0], x.shape[1], x.shape[2], -1)
-            idx = torch.randperm(kaj.shape[-1])
-            x = kaj[:,:,:,idx].view_as(x)        # batch, input_dim, output_dim, h, dim_x, dim_y
+            #kaj = x.view(x.shape[0], x.shape[1], x.shape[2], -1)
+            #idx = torch.randperm(kaj.shape[-1])
+            #x = kaj[:,:,:,idx].view_as(x)        # batch, input_dim, output_dim, h, dim_x, dim_y
             
             x = x.permute(0, 1, 3, 4, 2).contiguous()           # batch_size, input_dim, output_dim, dim_x, dim_y, input_atoms
             x = x.view(x.size(0), -1, x.size(-1), 1, 1)         # batch_size, input_dim*dim_x*dim_y, input_atoms, 1, 1
@@ -397,15 +397,21 @@ class MaxRouteReduce(nn.Module):
         
         #capsule_routing = x[1].max(dim=1)[0] # batch, output_dim, dim_x, dim_y
         #capsule_routing = x[1].sum(dim=1) # batch, output_dim, dim_x, dim_y
-        x_sh = x[0].shape
+        """ If previous was VectorRouting """
+        if len(x) == 3:
+            votes, route = x[2], x[1]
+        else:
+            votes, route = x[0], x[1]
+        
+        v_shp = votes.shape
         #capsule_routing = x[1].view(-1, x_sh[1], x_sh[-2], x_sh[-1])
-        capsule_routing = x[1].sum(dim=2) # batch, input_dim, dim_x, dim_y
+        capsule_routing = route.sum(dim=2) # batch, input_dim, dim_x, dim_y
 
         """ Rank routing coefficients """
-        a_sort = capsule_routing.view(x_sh[0], x_sh[1], -1).sort(1, descending=True)[1] # batch, input_dim, dim_x*dim_y
-        a_sort = a_sort[:,:,None,None,:].repeat(1,1,x_sh[2],x_sh[3],1)
+        a_sort = capsule_routing.view(v_shp[0], v_shp[1], -1).sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
+        a_sort = a_sort[:,:,None,None,:].repeat(1,1,v_shp[2],v_shp[3],1)
 
-        x_sorted = x[0].view_as(a_sort).gather(4, a_sort)
+        x_sorted = votes.view_as(a_sort).gather(4, a_sort)
         best = x_sorted[:,:,:,:,:self.out_sz]
         rest = x_sorted[:,:,:,:,self.out_sz:]
         idx_lucky = torch.randperm(rest.size(4))[:self.rnd_out_sz]

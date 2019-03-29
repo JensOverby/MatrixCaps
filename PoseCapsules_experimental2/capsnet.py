@@ -287,6 +287,8 @@ class CapsNet(nn.Module):
             layer_list['route2'] = layers.VectorRouting(num_routing=3)
             layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
             layer_list['route3'] = layers.VectorRouting(num_routing=3)
+            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
+            layer_list['route3a'] = layer_list['route3']
 
             layer_list['caps1'] = layers.ConvCaps(output_dim=32, h=12)
             pathway = []
@@ -298,7 +300,7 @@ class CapsNet(nn.Module):
             layer_list['caps3'] = layers.ConvCaps(output_dim=32, h=12)
             layer_list['concat3c'] = ConcatLayer(pathway, 1)
             layer_list['route3c'] = layers.VectorRouting(num_routing=3)
-            layer_list['sparse3c'] = SparseCoding(False)
+            layer_list['sparse3c'] = SparseCoding(True)
             layer_list['route3ca'] = layer_list['route3c']
             decoder_input_atoms = 10
             layer_list['caps4'] = layers.ConvCaps(output_dim=1, h=decoder_input_atoms)
