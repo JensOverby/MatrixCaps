@@ -48,14 +48,21 @@ class StoreObject():
 class StoreLayer(nn.Module):
     def __init__(self, container, do_clone=True):
         super(StoreLayer, self).__init__()
+        container.append(None)
         self.container = container
         self.do_clone = do_clone
         
     def forward(self, x):
-        if self.do_clone:
-            self.container.value = x.clone()
+        if type(x) is tuple:
+            if self.do_clone:
+                self.container[0] = x[0].clone()
+            else:
+                self.container[0] = x[0]
         else:
-            self.container.value = x
+            if self.do_clone:
+                self.container[0] = x.clone()
+            else:
+                self.container[0] = x
         return x
 
 class ConcatLayer(nn.Module):
@@ -68,11 +75,11 @@ class ConcatLayer(nn.Module):
     def forward(self, x):
         if type(x) is tuple:
             x = x[0]
-        y = torch.cat([self.container.value, x], self.channel_dimension)
+        y = torch.cat([self.container[0], x], self.channel_dimension)
         if self.do_clone:
-            self.container.value = y.clone()
+            self.container[0] = y.clone()
         else:
-            self.container.value = y
+            self.container[0] = y
         return y
 
 class BranchLayer(nn.Module):
@@ -270,25 +277,63 @@ class CapsNet(nn.Module):
             sz = layers.calc_out(sz, kernel=9, stride=1, padding=4)
             sz = layers.calc_out(sz, kernel=9, stride=1, padding=4)
 
+            layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0]+1, out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+            layer_list['prim1'] = layers.ConvVector2d(output_dim=2, h=8, kernel_size=15, stride=2, padding=7, bias=False)
+            layer_list['route1'] = layers.VectorRouting(num_routing=1)
+            layer_list['prim2'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['route2'] = layers.VectorRouting(num_routing=3)
+            layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['route3'] = layers.VectorRouting(num_routing=3)
+
+            layer_list['caps1'] = layers.ConvCaps(output_dim=32, h=12)
+            pathway = []
+            layer_list['branch'] = StoreLayer(pathway)
+            layer_list['route1c'] = layers.VectorRouting(num_routing=3)
+            layer_list['caps2'] = layers.ConvCaps(output_dim=32, h=12)
+            layer_list['concat2c'] = ConcatLayer(pathway, 1)
+            layer_list['route2c'] = layers.VectorRouting(num_routing=3)
+            layer_list['caps3'] = layers.ConvCaps(output_dim=32, h=12)
+            layer_list['concat3c'] = ConcatLayer(pathway, 1)
+            layer_list['route3c'] = layers.VectorRouting(num_routing=3)
+            layer_list['sparse3c'] = SparseCoding(False)
+            layer_list['route3ca'] = layer_list['route3c']
+            decoder_input_atoms = 10
+            layer_list['caps4'] = layers.ConvCaps(output_dim=1, h=decoder_input_atoms)
+            layer_list['route4c'] = layers.VectorRouting(num_routing=3)
+
+            """
             layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
             layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu1'] = nn.ReLU(inplace=True)
-            layer_list['conv2prim'] = layers.ConvToPrim()
-            layer_list['prim1'] = layers.CapsuleLayer(output_dim=2, h=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 15, 'padding': 7})
-            layer_list['prim2'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 9, 'padding': 4})
-            layer_list['prim3'] = layers.CapsuleLayer(output_dim=4, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 9, 'padding': 4})
-            layer_list['reduce'] = layers.PrimReduceToCaps(100)
-            
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=64, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['sparse1a'] = SparseCoding(False)
-            layer_list['caps2'] = layers.CapsuleLayer(output_dim=64, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['sparse2a'] = SparseCoding(False)
-            layer_list['caps3'] = layers.CapsuleLayer(output_dim=64, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['sparse3a'] = SparseCoding(True)
-            #layer_list['dense_caps2'] = DenseLayer(layers.CapsuleLayer(output_dim=32, h=12, num_routing=3, voting={'type': 'standard'}), 1)
-            #layer_list['dense_caps3'] = DenseLayer(layers.CapsuleLayer(output_dim=16, h=12, num_routing=3, voting={'type': 'standard'}), 1)
+            layer_list['prim1'] = layers.ConvVector2d(output_dim=2, h=8, kernel_size=15, stride=2, padding=7, bias=False)
+            layer_list['route1'] = layers.VectorRouting(num_routing=1)
+            layer_list['prim2'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['route2'] = layers.VectorRouting(num_routing=3)
+            #x_obj = []
+            #layer_list['store'] = StoreLayer(x_obj, True)
+            layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
+            #layer_list['reduce'] = layers.KeyRouting(layer_list['prim3'], x_obj)
+            layer_list['route3'] = layers.VectorRouting(num_routing=3)
+            layer_list['maxpool'] = layers.MaxRoutePool(kernel_size=1)
+            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
+            #layer_list['route3'] = layers.VectorRouting(num_routing=3)
+            layer_list['route3a'] = layer_list['route3']
+
+            layer_list['caps1'] = layers.ConvCaps(output_dim=64, h=12)
+            layer_list['route1c'] = layers.VectorRouting(num_routing=3)
+            layer_list['caps2'] = layers.ConvCaps(output_dim=64, h=12)
+            layer_list['route2c'] = layers.VectorRouting(num_routing=3)
+            layer_list['caps3'] = layers.ConvCaps(output_dim=64, h=12)
+            layer_list['route3c'] = layers.VectorRouting(num_routing=3)
+            layer_list['sparse3c'] = SparseCoding(False)
+            layer_list['route3ca'] = layer_list['route3c']
             decoder_input_atoms = 10
-            layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, h=decoder_input_atoms, num_routing=3, voting={'type': 'standard'})
+            layer_list['caps4'] = layers.ConvCaps(output_dim=1, h=decoder_input_atoms)
+            layer_list['route4c'] = layers.VectorRouting(num_routing=3)
+            """
 
         self.capsules = nn.Sequential(layer_list)
 
@@ -300,7 +345,7 @@ class CapsNet(nn.Module):
 
     def forward(self, x, y, disable_recon=False):
 
-        conv_cap, _ = self.capsules(x)
+        conv_cap,_,_ = self.capsules(x)
 
         p = conv_cap.view(conv_cap.size(0),-1)
         p = self.target_decoder(p)
