@@ -49,21 +49,42 @@ class StoreLayer(nn.Module):
         return x
 
 class ConcatLayer(nn.Module):
-    def __init__(self, container, channel_dimension, do_clone=True):
+    def __init__(self, container, do_clone=True):
         super(ConcatLayer, self).__init__()
-        self.channel_dimension = channel_dimension
         self.container = container
         self.do_clone = do_clone
         
     def forward(self, x):
         if type(x) is tuple:
             x = x[0]
-        y = torch.cat([self.container[0], x], self.channel_dimension)
+        if x.shape[2:].numel() != self.container[0].shape[2:].numel():
+            if len(x.shape) > 4:
+                x = x.permute(0, 1, 3, 4, 2).contiguous()                    # batch_size, output_dim, h, dim_x, dim_y, h
+                x = x.view(x.size(0), x.size(1), -1, x.size(-1))             # batch_size, output_dim,dim_x*dim_y, h
+                idx = torch.randperm(x.shape[2])
+                x = x[:,:,idx,:].view(x.shape[0], -1, x.shape[3], 1, 1)   # batch_size, output_dim*dim_x*dim_y, h, 1, 1
+            if len(self.container[0].shape) > 4:
+                x_c = self.container[0].permute(0, 1, 3, 4, 2).contiguous()           # batch_size, output_dim, h, dim_x, dim_y, h
+                x_c = x_c.view(x_c.size(0), -1, x_c.size(-1), 1, 1)         # batch_size, output_dim*dim_x*dim_y, h, 1, 1
+            else:
+                x_c = self.container[0]
+            y = torch.cat([x_c, x], 1)
+            return y
+            
+        y = torch.cat([self.container[0], x], 1)
         if self.do_clone:
             self.container[0] = y.clone()
         else:
             self.container[0] = y
         return y
+
+class ActivatePathway(nn.Module):
+    def __init__(self, container):
+        super(ActivatePathway, self).__init__()
+        self.container = container
+        
+    def forward(self, x):
+        return self.container[0]
 
 class BranchLayer(nn.Module):
     def __init__(self, primary_function, secondary_function, container):
@@ -76,9 +97,57 @@ class BranchLayer(nn.Module):
         self.container.value = self.secondary_function(x.clone())
         return self.primary_function(x)
 
+class BNLayer(nn.Module):
+    def __init__(self):
+        super(BNLayer, self).__init__()
+        self.not_initialized = True
+
+    def forward(self, x):
+        shp = x.shape
+        xx = x[:,:,:,:shp[3]-1,:,:].contiguous().view(shp[0]*shp[1], shp[2]*(shp[3]-1), shp[4], shp[5])
+        yy = x[:,:,:,shp[3]-1:,:,:]
+        if self.not_initialized:
+            self.batchnorm = nn.BatchNorm2d(num_features=xx.shape[1])
+            self.not_initialized = False
+        xx = self.batchnorm(xx).view(shp[0], shp[1], shp[2], shp[3]-1, shp[4], shp[5])
+        xx = torch.tanh(xx)
+        x = torch.cat([xx,yy], dim=3)
+        return x
+
+class UpsampleLayer(nn.Module):
+    def __init__(self, up_dim):
+        super(UpsampleLayer, self).__init__()
+        self.up_dim = up_dim
+        #self.not_initialized = True
+
+    def forward(self, x):
+        if type(x) is tuple:
+            x = x[0]
+        shp = list(x.shape)
+        if len(shp) == 6:
+            h = shp[3]-1
+            dim = int(math.sqrt(h))
+            shp[3] = (dim+self.up_dim) ** 2 - h
+            x_new = torch.cat([x[:,:,:,:h,:,:], torch.zeros(shp), x[:,:,:,h:,:,:]], dim=3)
+            return x_new
+        h = shp[-1]-1
+        dim = int(math.sqrt(h))
+        shp[-1] = (dim+self.up_dim) ** 2 - h
+        x_new = torch.cat([x[:,:,:,:,:h], torch.zeros(shp, device=x.device), x[:,:,:,:,h:]], dim=-1)
+        return x_new
+
+
+def hookFunc(module, gradInput, gradOutput):
+    #print(len(gradInput))
+    for v in gradInput:
+        print('Number of in NANs = ', (v != v).sum())
+        #print (v)
+    for v in gradOutput:
+        print('Number of out NANs = ', (v != v).sum())
+
 
 class CapsNet(nn.Module):
-    def __init__(self, output_atoms, img_shape, dataset, data_rep='MSE', normalize=0, lambda_=0.0):
+    def __init__(self, output_atoms, img_shape, dataset, data_rep='MSE', normalize=0):
         super(CapsNet, self).__init__()
         self.normalize = normalize
         
@@ -147,50 +216,66 @@ class CapsNet(nn.Module):
 
             
             """ First convolutional layer with stride 2 """
-            channels = img_shape[0]
-            layer_list['conv1'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=9, stride=2, padding=4, bias=False)
+            channels = img_shape[0]+1
+            layer_list['conv1'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=15, stride=2, padding=7, bias=False)
             layer_list['bn1'] = BatchRenorm(num_features=4)
             layer_list['relu1'] = nn.ReLU(inplace=True)
 
 
             """ Dense Block """
-            sz = layers.calc_out(img_shape[-1], kernel=9, stride=2, padding=4)
-            same_padding = layers.calc_same_padding(sz, k=5, s=1)
+            sz = layers.calc_out(img_shape[-1], kernel=15, stride=2, padding=7)
+            same_padding = layers.calc_same_padding(sz, k=7, s=1)
             pathway1 = []
-            layer_list['store_begin'] = StoreLayer(pathway1, False)
+            layer_list['store_pathway1'] = StoreLayer(pathway1, False)
             channels = 4
-            layer_list['conv2'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=5, stride=1, padding=same_padding, bias=False)
+            layer_list['conv2'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=7, stride=1, padding=same_padding, bias=False)
             layer_list['bn2'] = BatchRenorm(num_features=4)
             layer_list['relu2'] = nn.ReLU(inplace=True)
-            layer_list['concat2a'] = ConcatLayer(pathway1, 1, False)
+            layer_list['concat2a'] = ConcatLayer(pathway1, False)
             channels += 4
-            layer_list['conv3'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=5, stride=1, padding=same_padding, bias=False)
+            layer_list['conv3'] = nn.Conv2d(in_channels=channels, out_channels=4, kernel_size=7, stride=1, padding=same_padding, bias=False)
             layer_list['bn3'] = BatchRenorm(num_features=4)
             layer_list['relu3'] = nn.ReLU(inplace=True)
-            layer_list['concat3a'] = ConcatLayer(pathway1, 1, False)
+            layer_list['concat3a'] = ConcatLayer(pathway1, False)
             
             
             """ Convolutional Capsules Block """
-            layer_list['prim1'] = layers.ConvVector2d(output_dim=2, h=8, kernel_size=9, stride=2, padding=4, bias=False)
+            layer_list['prim1'] = layers.ConvVector2d(output_dim=2, h=8, kernel_size=7, stride=2, padding=3, bias=False)
             layer_list['route1'] = layers.VectorRouting(num_routing=1)
-            layer_list['prim2'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
-            layer_list['route2'] = layers.VectorRouting(num_routing=3)
-            layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=12, kernel_size=9, stride=1, padding=4, bias=False)
+            #layer_list['prim2'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
+            #layer_list['route2'] = layers.VectorRouting(num_routing=3)
+            layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=12, kernel_size=7, stride=1, padding=3, bias=False)
             layer_list['route3'] = layers.VectorRouting(num_routing=3)
+            pathway2 = []
+            layer_list['store_pathway2'] = StoreLayer(pathway2, False)
+            
+            
+            """ Dimensionality Reduction Block """
             layer_list['maxpool'] = layers.MaxRoutePool(kernel_size=2)
-            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=150)
+            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100, add_random=False)
             layer_list['route3a'] = layer_list['route3']
+            pathway3 = []
+            layer_list['store_pathway3'] = StoreLayer(pathway3, False)
+            layer_list['activate_pathway2'] = ActivatePathway(pathway2)
 
 
+            layer_list['prim4'] = layers.ConvVector2d(output_dim=4, h=12, kernel_size=7, stride=3, padding=3, bias=False)
+            layer_list['route4'] = layers.VectorRouting(num_routing=3)
+            layer_list['prim5'] = layers.ConvVector2d(output_dim=4, h=12, kernel_size=7, stride=3, padding=3, bias=False)
+            layer_list['route5'] = layers.VectorRouting(num_routing=3)
+            layer_list['concat5b'] = ConcatLayer(pathway3, False)
+
+
+            """ Dense Capsules Block """
             layer_list['caps1'] = layers.ConvCaps(output_dim=32, h=12)
             pathway2 = []
             layer_list['branch'] = StoreLayer(pathway2)
             layer_list['route1c'] = layers.VectorRouting(num_routing=3)
             layer_list['caps2'] = layers.ConvCaps(output_dim=32, h=12)
-            layer_list['concat2c'] = ConcatLayer(pathway2, 1)
+            layer_list['concat2c'] = ConcatLayer(pathway2)
             layer_list['route2c'] = layers.VectorRouting(num_routing=3)
             layer_list['caps3'] = layers.ConvCaps(output_dim=32, h=12)
-            layer_list['concat3c'] = ConcatLayer(pathway2, 1)
+            layer_list['concat3c'] = ConcatLayer(pathway2)
             layer_list['route3c'] = layers.VectorRouting(num_routing=3)
             layer_list['sparse3c'] = SparseCoding(True)
             layer_list['route3ca'] = layer_list['route3c']
@@ -241,6 +326,37 @@ class CapsNet(nn.Module):
         elif img_shape[-1] == 50:
 
             layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0]+1, out_channels=5, kernel_size=15, stride=1, padding=7, bias=True)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            nn.init.normal_(layer_list['conv1'].bias.data, mean=0,std=0.1)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=5, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=16, h=4, kernel_size=15, stride=2, padding=7, bias=True, activate=True)
+            layer_list['bnn1'] = BNLayer()
+            #layer_list['prim1'].register_backward_hook(hookFunc)
+            layer_list['route1'] = layers.MatrixRouting(output_dim=16, num_routing=1)
+            layer_list['up1'] = UpsampleLayer(1)
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=16, h=9, kernel_size=9, stride=1, padding=4, bias=True)
+            layer_list['bnn2'] = BNLayer()
+            layer_list['route2'] = layers.MatrixRouting(output_dim=16, num_routing=3)
+            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=16, h=9, kernel_size=9, stride=1, padding=4, bias=True)
+            layer_list['bnn3'] = BNLayer()
+            layer_list['route3'] = layers.MatrixRouting(output_dim=16, num_routing=3)
+
+            layer_list['caps1'] = layers.MatrixCaps(output_dim=32, hh=9)
+            layer_list['route1c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+            layer_list['up2'] = layer_list['up1']
+            layer_list['caps2'] = layers.MatrixCaps(output_dim=32, hh=16)
+            layer_list['route2c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+            layer_list['caps3'] = layers.MatrixCaps(output_dim=32, hh=16)
+            layer_list['route3c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+            decoder_input_atoms = 10
+            layer_list['caps4'] = layers.MatrixCaps(output_dim=1, hh=16) #decoder_input_atoms)
+            layer_list['route4c'] = layers.MatrixRouting(output_dim=1, num_routing=3)
+            layer_list['out'] = layers.MatrixToOut(decoder_input_atoms)
+            
+            """
+            layer_list['posenc'] = layers.PosEncoderLayer()
             layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0]+1, out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
             layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
             layer_list['relu1'] = nn.ReLU(inplace=True)
@@ -264,36 +380,6 @@ class CapsNet(nn.Module):
             layer_list['concat3c'] = ConcatLayer(pathway, 1)
             layer_list['route3c'] = layers.VectorRouting(num_routing=3)
             layer_list['sparse3c'] = SparseCoding(True)
-            layer_list['route3ca'] = layer_list['route3c']
-            decoder_input_atoms = 10
-            layer_list['caps4'] = layers.ConvCaps(output_dim=1, h=decoder_input_atoms)
-            layer_list['route4c'] = layers.VectorRouting(num_routing=3)
-
-            """
-            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
-            layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu1'] = nn.ReLU(inplace=True)
-            layer_list['prim1'] = layers.ConvVector2d(output_dim=2, h=8, kernel_size=15, stride=2, padding=7, bias=False)
-            layer_list['route1'] = layers.VectorRouting(num_routing=1)
-            layer_list['prim2'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
-            layer_list['route2'] = layers.VectorRouting(num_routing=3)
-            #x_obj = []
-            #layer_list['store'] = StoreLayer(x_obj, True)
-            layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
-            #layer_list['reduce'] = layers.KeyRouting(layer_list['prim3'], x_obj)
-            layer_list['route3'] = layers.VectorRouting(num_routing=3)
-            layer_list['maxpool'] = layers.MaxRoutePool(kernel_size=1)
-            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
-            #layer_list['route3'] = layers.VectorRouting(num_routing=3)
-            layer_list['route3a'] = layer_list['route3']
-
-            layer_list['caps1'] = layers.ConvCaps(output_dim=64, h=12)
-            layer_list['route1c'] = layers.VectorRouting(num_routing=3)
-            layer_list['caps2'] = layers.ConvCaps(output_dim=64, h=12)
-            layer_list['route2c'] = layers.VectorRouting(num_routing=3)
-            layer_list['caps3'] = layers.ConvCaps(output_dim=64, h=12)
-            layer_list['route3c'] = layers.VectorRouting(num_routing=3)
-            layer_list['sparse3c'] = SparseCoding(False)
             layer_list['route3ca'] = layer_list['route3c']
             decoder_input_atoms = 10
             layer_list['caps4'] = layers.ConvCaps(output_dim=1, h=decoder_input_atoms)

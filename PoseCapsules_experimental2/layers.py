@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import math
 from batchrenorm import BatchRenorm
+#from caffe2.python.embedding_generation_benchmark import device
 
 votes_t_shape = [3, 0, 1, 2, 4, 5]
 r_t_shape = [1, 2, 3, 0, 4, 5]
@@ -67,7 +68,7 @@ class MatrixToOut(nn.Module):
         super(MatrixToOut, self).__init__()
         self.output_dim = output_dim
     def forward(self, x):
-        return x[0][...,:self.output_dim]
+        return x[0][...,:self.output_dim], None, None
 
 
 class PosEncoderLayer(nn.Module):
@@ -169,6 +170,86 @@ class ConvVector2d(nn.Module):
         return votes
 
 
+class PrimMatrix2d(nn.Module):
+    def __init__(self, output_dim, h, kernel_size, stride, padding, bias, activate=False):
+        super(PrimMatrix2d, self).__init__()
+        self.output_dim = output_dim
+        self.h = h
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.bias = bias
+        self.activate = activate
+        self.not_initialized = True
+        
+    def init(self, x): # batch_size, input_dim, input_atoms, dim_x, dim_y
+        in_channels = int(x.size(2)/(self.h+1))
+        self.conv = nn.Conv2d(in_channels=in_channels*self.h,
+                                       out_channels=self.output_dim * self.h,
+                                       kernel_size=self.kernel_size,
+                                       stride=self.stride,
+                                       padding=self.padding,
+                                       bias=self.bias)
+        nn.init.normal_(self.conv.weight.data, mean=0,std=0.1)
+        if self.bias:
+            nn.init.normal_(self.conv.bias.data, mean=0,std=0.1)
+        if self.activate:
+            self.conv_a = nn.Conv2d(in_channels=in_channels,
+                                           out_channels=self.output_dim,
+                                           kernel_size=self.kernel_size,
+                                           stride=self.stride,
+                                           padding=self.padding,
+                                           bias=self.bias)
+            nn.init.normal_(self.conv_a.weight.data, mean=0,std=0.1)
+            if self.bias:
+                nn.init.normal_(self.conv_a.bias.data, mean=0,std=0.1)
+        self.not_initialized = False
+
+
+    def forward(self, x):
+        """ x: batch_size, input_dim, input_atoms, dim_x, dim_y """
+        if type(x) is tuple:
+            x = x[0]
+        shp = x.shape                                           # batch_size, input_dim, input_atoms, dim_x, dim_y
+
+        if len(shp) == 4:
+            """ If previous was Conv2d """
+            x = x.unsqueeze(1)
+            shp = x.shape
+        elif (shp[-1] == (self.h+1)) and (shp[2] == shp[3]): # b, C, w, w, hh
+            """ If previous was MatrixRouting """
+            x = x.permute(0,1,4,2,3)
+            shp = x.shape
+        elif len(shp) == 6:
+            shp = list(shp)
+            shp[1] = shp[1]*shp[2]
+            shp.pop(2)
+            x = x.view(shp)
+        if self.not_initialized:
+            self.init(x)
+        
+        x = x.view(shp[0]*shp[1], shp[2], shp[3], shp[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
+
+        votes = self.conv(x[:,:self.h,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+        #if not self.activate:
+        #    votes = torch.tanh(votes)
+        votes = votes.view(shp[0], -1, self.output_dim, self.h, votes.size(-2), votes.size(-1))
+
+        if self.activate:
+            activations = self.conv_a(x[:,self.h:,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+            activations = torch.sigmoid(activations)
+            activations = activations.view(shp[0], -1, self.output_dim, 1, votes.size(-2), votes.size(-1))
+        else:
+            shp = list(votes.shape)
+            shp.pop(3)
+            activations = torch.ones(shp, device=votes.device).unsqueeze(3)
+
+        x = torch.cat([votes, activations], dim=3)
+        #x = x.view(shp[0], -1, self.output_dim, self.h, x.size(-2), x.size(-1)) # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
+
+        return x
+
+
 class ConvMatrix2d(nn.Module):
     def __init__(self, output_dim, hh, kernel_size, stride, padding):
         super(ConvMatrix2d, self).__init__()
@@ -261,6 +342,40 @@ class ConvCaps(nn.Module):
         return votes
 
 
+class MatrixCaps(nn.Module):
+    def __init__(self, output_dim, hh):
+        super(MatrixCaps, self).__init__()
+        self.C = output_dim
+        self.h = int(math.sqrt(hh))
+        self.not_initialized = True
+
+    def init(self, x): # b, B, hh
+        self.weight = nn.Parameter(torch.randn(x.shape[1], self.C, self.h, self.h))
+        self.not_initialized = False
+
+    def forward(self, x): # b, B, hh
+        if type(x) is tuple:
+            x = x[0]
+        shp = x.shape
+        if len(shp) == 5:
+            x = x.view(shp[0], -1, shp[-1])
+        if self.not_initialized:
+            self.init(x)
+
+        b, B, hh = x.shape
+
+        activations = x[...,hh-1:]
+        poses = x[...,:hh-1].view(b, B, 1, self.h, self.h)
+        
+        votes = self.weight @ poses
+
+        votes = votes.view(b, B, self.C, -1)
+        activations = activations.view(b, B, 1, 1).repeat(1, 1, self.C, 1)
+        x = torch.cat([votes, activations], dim=-1)
+        
+        return x
+
+
 class VectorRouting(nn.Module):
     def __init__(self, num_routing):
         super(VectorRouting, self).__init__()
@@ -296,21 +411,37 @@ class MatrixRouting(nn.Module):
         super(MatrixRouting, self).__init__()
         self.output_dim = output_dim
         self.num_routing = num_routing
-        self.beta_v = nn.Parameter(torch.randn(output_dim).view(1,output_dim,1,1))
-        self.beta_a = nn.Parameter(torch.randn(output_dim).view(1,output_dim,1))
+        self.beta_v = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1,1))
+        self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
+        #self.not_initialized = True
+
+    #def init(self, votes):
+    #    self.not_initialized = False
         
     def forward(self, votes): # (b, Bkk, Cww, hh)
+        if type(votes) is tuple:
+            """ the votes are pooled/reduced, so bias should be detached? """
+            votes = votes[0]
         shp = votes.shape
 
         """ If previous was ConvVector2d """
         if len(shp) == 6: # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
-            votes = votes.permute(0,1,2,4,5,3).contiguous()
-            votes = votes.view(shp[0], shp[1], shp[2]*shp[4]*shp[5], shp[3])
-            shp = votes.shape
+            v = votes.permute(0,1,2,4,5,3).contiguous()
+            v = v.view(shp[0], shp[1], shp[2]*shp[4]*shp[5], shp[3])
+            w_x, w_y = shp[-2], shp[-1]
+            #if shp[-2] != shp[-1]:
+            #    self.output_dim = v.shape[2]
+            shp = v.shape
+        else:
+            w_x = w_y = int(math.sqrt(shp[2] / self.output_dim))
+            v = votes
+
+        #if self.not_initialized:
+        #    self.init(v)
+        b, Bkk, Cww, hh = shp
         
-        V = votes[...,:shp[3]-1]
-        a_ = votes[...,shp[3]-1:]
-        w = int(math.sqrt(shp[2] / self.output_dim))
+        V = v[...,:hh-1]
+        a_ = v[...,hh-1:].squeeze(-1)
 
         # routing coefficient
         if V.is_cuda:
@@ -321,10 +452,10 @@ class MatrixRouting(nn.Module):
         for i in range(self.num_routing):
             # M-step
             R = (R * a_).unsqueeze(-1)
-            sum_R = R.sum(1)
+            sum_R = R.sum(1) + 0.0001
             mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
-            V_minus_mu_sqr = (V - mu) ** 2
-            sigma_square = ((R * V_minus_mu_sqr).sum(1) / sum_R).unsqueeze(1)
+            V_minus_mu_sqr = (V - mu) ** 2 + eps
+            sigma_square = ((R * V_minus_mu_sqr).sum(1) / sum_R).unsqueeze(1) + eps
 
             """
             beta_v: Bias for log probability of sigma ("standard deviation")
@@ -335,19 +466,20 @@ class MatrixRouting(nn.Module):
             Votes are routed by the learned weight self.W.
             """
             log_sigma = torch.log(sigma_square.sqrt()+eps)
-            cost = (self.beta_v + log_sigma.view(shp[0],self.output_dim,-1,shp[3]-1)) * sum_R.view(shp[0], self.output_dim,-1,1)
+            cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,hh-1)) * sum_R.view(b, self.output_dim,-1,1)
             a = torch.sigmoid(lambda_ * (self.beta_a - cost.sum(-1)))
-            a = a.view(shp[0], shp[2])
+            a = a.view(b, Cww)
 
             # E-step
-            if i != self.iteration - 1:
+            if i != self.num_routing - 1:
                 ln_p_j_h = -V_minus_mu_sqr / (2 * sigma_square) - log_sigma - 0.5*ln_2pi
                 p = torch.exp(ln_p_j_h)
                 ap = a[:,None,:] * p.sum(-1)
                 R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + eps) + eps, requires_grad=False) # detaches from graph
 
-        mu_a = torch.cat([mu.view(shp[0], self.output_dim, w, w, -1), a.view(shp[0], self.output_dim, w, w, 1)], dim=-1) # b, C, w, w, hh
-        return mu_a
+        mu_a = torch.cat([mu.view(b, self.output_dim, w_x, w_y, -1), a.view(b, self.output_dim, w_x, w_y, 1)], dim=-1) # b, C, w, w, hh
+
+        return mu_a, R.view(b, Bkk, self.output_dim, w_x, w_y), votes
 
 
 class MaxRoutePool(nn.Module):
@@ -384,10 +516,14 @@ class MaxRoutePool(nn.Module):
 
 
 class MaxRouteReduce(nn.Module):
-    def __init__(self, out_sz):
+    def __init__(self, out_sz, add_random):
         super(MaxRouteReduce, self).__init__()
-        self.out_sz = int(0.75*out_sz)
+        if add_random:
+            self.out_sz = int(0.75*out_sz)
+        else:
+            self.out_sz = out_sz
         self.rnd_out_sz = out_sz - self.out_sz
+        self.add_random = add_random
         
     def forward(self, x):
 
@@ -412,10 +548,13 @@ class MaxRouteReduce(nn.Module):
         a_sort = a_sort[:,:,None,None,:].repeat(1,1,v_shp[2],v_shp[3],1)
 
         x_sorted = votes.view_as(a_sort).gather(4, a_sort)
-        best = x_sorted[:,:,:,:,:self.out_sz]
-        rest = x_sorted[:,:,:,:,self.out_sz:]
-        idx_lucky = torch.randperm(rest.size(4))[:self.rnd_out_sz]
-        x_sorted = torch.cat([best,rest[:,:,:,:,idx_lucky]], dim=4)
+        if self.add_random:
+            best = x_sorted[:,:,:,:,:self.out_sz]
+            rest = x_sorted[:,:,:,:,self.out_sz:]
+            idx_lucky = torch.randperm(rest.size(4))[:self.rnd_out_sz]
+            x_sorted = torch.cat([best,rest[:,:,:,:,idx_lucky]], dim=4)
+        else:
+            x_sorted = x_sorted[:,:,:,:,:self.out_sz]
 
         idx = torch.randperm(self.out_sz+self.rnd_out_sz)
         x_sorted = x_sorted[:,:,:,:,idx].unsqueeze(-1)        # batch, input_dim, output_dim, h, dim_x, dim_y

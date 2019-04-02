@@ -21,6 +21,7 @@ import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
 from se3_geodesic_loss import SE3GeodesicLoss
 #from sklearn.datasets.lfw import _load_imgs
+from torch.autograd import detect_anomaly
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
@@ -30,6 +31,7 @@ torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
 import layers
+from layers import lambda_
 
 if __name__ == '__main__':
     torch.cuda.empty_cache()
@@ -98,25 +100,19 @@ if __name__ == '__main__':
         normalize = args.normalize
     imgs = imgs[:2]
     labels = labels[:2]
-    lambda_ = 0.9 if args.pretrained else 1e-3
-    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=args.loss, normalize=normalize, lambda_=lambda_)
-    model(imgs, labels, disable_recon=args.disable_recon)
+    layers.lambda_ = 0.9 if args.pretrained else 1e-3
+    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=args.loss, normalize=normalize)
+    model(imgs, labels, args.disable_recon)
 
     if not args.disable_cuda and torch.cuda.is_available():
         model.cuda()
+        labels = labels.cuda()
+        imgs = imgs.cuda()
 
 
-
-    """
     if args.jit:
-        dummy1 = torch.rand(args.batch_size,4,100,100).float()
-        dummy2 = torch.rand(args.batch_size,12).float()
-        if not args.disable_cuda:
-            dummy1 = dummy1.cuda()
-            dummy2 = dummy2.cuda()
-        model(lambda_, dummy1, dummy2)
-        model = torch.jit.trace(model, (lambda_, dummy1, dummy2), check_inputs=[(lambda_, dummy1, dummy2)])
-    """
+        model = torch.jit.trace(model, (imgs, labels, args.disable_recon), check_inputs=[(imgs, labels, args.disable_recon)])
+
 
     print("# parameters:", sum(param.numel() for param in model.parameters()))
 
@@ -246,12 +242,20 @@ if __name__ == '__main__':
                     loss += args.recon_factor * add_loss
                     loss_recon += args.recon_factor*add_loss.data.cpu().item() / args.batch_size
 
-                loss.backward()
+                #with self.assertRaisesRegex(RuntimeError, "Function 'MyFuncBackward' returned nan values in its 0th output."):
+                torch.autograd.set_detect_anomaly(True)
+                with detect_anomaly():
+                    loss.backward()
                 
                 optimizer.step()
 
                 #for param in model.image_decoder.parameters():
                 #    param.requires_grad = True
+                
+                layers.lambda_ += 0.0002
+                if layers.lambda_ > 1.:
+                    layers.lambda_ = 1.
+                
 
                 loss /= args.batch_size
 
@@ -350,6 +354,7 @@ if __name__ == '__main__':
             Scheduler
             """
             scheduler.step(loss)
+            
             
             #if epoch==3:
             #    for param_group in optimizer.param_groups:
