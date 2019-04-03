@@ -126,7 +126,7 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
     
     if args.loss == 'MSE':
-        caps_loss = MSELossWeighted(torch.tensor([1.,1.,1.,1.,1.,1.,5.,5.,5.,1.]).cuda())
+        caps_loss = MSELossWeighted(args.batch_size, 1.0)
         #caps_loss = MSELossWeighted(torch.ones(labels.size(1)).cuda())
     else:
         #caps_loss = geodesic_loss()
@@ -252,7 +252,7 @@ if __name__ == '__main__':
                 #for param in model.image_decoder.parameters():
                 #    param.requires_grad = True
                 
-                layers.lambda_ += 0.0002
+                layers.lambda_ += 0.0001
                 if layers.lambda_ > 1.:
                     layers.lambda_ = 1.
                 

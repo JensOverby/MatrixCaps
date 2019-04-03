@@ -203,6 +203,9 @@ class PrimMatrix2d(nn.Module):
             nn.init.normal_(self.conv_a.weight.data, mean=0,std=0.1)
             if self.bias:
                 nn.init.normal_(self.conv_a.bias.data, mean=0,std=0.1)
+        else:
+            self.pool = nn.AvgPool2d(self.kernel_size, stride=self.stride, padding=self.padding)
+        
         self.not_initialized = False
 
 
@@ -240,9 +243,11 @@ class PrimMatrix2d(nn.Module):
             activations = torch.sigmoid(activations)
             activations = activations.view(shp[0], -1, self.output_dim, 1, votes.size(-2), votes.size(-1))
         else:
-            shp = list(votes.shape)
-            shp.pop(3)
-            activations = torch.ones(shp, device=votes.device).unsqueeze(3)
+            activations = self.pool(x[:,self.h:,:,:])
+            activations = activations.view(shp[0], -1, 1, 1, activations.size(-2), activations.size(-1)).repeat(1,1,self.output_dim,1,1,1)
+            #shp = list(votes.shape)
+            #shp.pop(3)
+            #activations = torch.ones(shp, device=votes.device).unsqueeze(3)
 
         x = torch.cat([votes, activations], dim=3)
         #x = x.view(shp[0], -1, self.output_dim, self.h, x.size(-2), x.size(-1)) # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
@@ -358,7 +363,10 @@ class MatrixCaps(nn.Module):
             x = x[0]
         shp = x.shape
         if len(shp) == 5:
-            x = x.view(shp[0], -1, shp[-1])
+            if (shp[-2] == shp[-1]) or (shp[-1] == 1):
+                x = x.view(shp[0], shp[1], -1)
+            else:
+                x = x.view(shp[0], -1, shp[-1])
         if self.not_initialized:
             self.init(x)
 
@@ -450,7 +458,7 @@ class MatrixRouting(nn.Module):
             R = Variable(torch.ones(shp[:3]), requires_grad=False) / self.output_dim
 
         for i in range(self.num_routing):
-            # M-step
+            """ M-step: Compute an updated Gaussian model (μ, σ) """
             R = (R * a_).unsqueeze(-1)
             sum_R = R.sum(1) + 0.0001
             mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
@@ -470,11 +478,14 @@ class MatrixRouting(nn.Module):
             a = torch.sigmoid(lambda_ * (self.beta_a - cost.sum(-1)))
             a = a.view(b, Cww)
 
-            # E-step
+            """ E-step: Recompute the assignment probabilities R(ij) based on the new Gaussian model and the new a(j) """
             if i != self.num_routing - 1:
+                """ p_j_h is the probability of v_ij_h belonging to the capsule j’s Gaussian model """
                 ln_p_j_h = -V_minus_mu_sqr / (2 * sigma_square) - log_sigma - 0.5*ln_2pi
-                p = torch.exp(ln_p_j_h)
-                ap = a[:,None,:] * p.sum(-1)
+                p_j_h = torch.exp(ln_p_j_h)
+
+                """ Calculate normalized Assignment Probabilities (batch_size, input_dim, output_dim)"""
+                ap = a[:,None,:] * p_j_h.sum(-1)
                 R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + eps) + eps, requires_grad=False) # detaches from graph
 
         mu_a = torch.cat([mu.view(b, self.output_dim, w_x, w_y, -1), a.view(b, self.output_dim, w_x, w_y, 1)], dim=-1) # b, C, w, w, hh
