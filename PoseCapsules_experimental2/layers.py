@@ -527,14 +527,11 @@ class MaxRoutePool(nn.Module):
 
 
 class MaxRouteReduce(nn.Module):
-    def __init__(self, out_sz, add_random):
+    def __init__(self, out_sz, max_pct=37., sum_pct=37.):
         super(MaxRouteReduce, self).__init__()
-        if add_random:
-            self.out_sz = int(0.75*out_sz)
-        else:
-            self.out_sz = out_sz
-        self.rnd_out_sz = out_sz - self.out_sz
-        self.add_random = add_random
+        self.max_sz = int(max_pct*out_sz/100.)
+        self.sum_sz = int(sum_pct*out_sz/100.)
+        self.rnd_sz = out_sz - self.max_sz - self.sum_sz
         
     def forward(self, x):
 
@@ -551,23 +548,29 @@ class MaxRouteReduce(nn.Module):
             votes, route = x[0], x[1]
         
         v_shp = votes.shape
+        
+        route_max = route.max(dim=2)[0]
+        route_sort_id = route_max.view(v_shp[0], v_shp[1], -1).sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
+        route_sort_best_id = route_sort_id[:,:,None,None,:self.max_sz].repeat(1,1,v_shp[2],v_shp[3],1)
+        x_best = votes.view(v_shp[0], v_shp[1], v_shp[2], v_shp[3], -1).gather(4, route_sort_best_id)
+        
+        route_sort_rest_id = route_sort_id[:,:,None,self.max_sz:].repeat(1,1,v_shp[2],1)
+        route_rest = route.view(v_shp[0],v_shp[1],v_shp[2],-1).gather(3,route_sort_rest_id)
+        
         #capsule_routing = x[1].view(-1, x_sh[1], x_sh[-2], x_sh[-1])
-        capsule_routing = route.sum(dim=2) # batch, input_dim, dim_x, dim_y
+        route_sum = route_rest.sum(dim=2) # batch, input_dim, dim_x, dim_y
 
         """ Rank routing coefficients """
-        a_sort = capsule_routing.view(v_shp[0], v_shp[1], -1).sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
-        a_sort = a_sort[:,:,None,None,:].repeat(1,1,v_shp[2],v_shp[3],1)
+        route_sort_id = route_sum.view(v_shp[0], v_shp[1], -1).sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
+        route_sort_id = route_sort_id[:,:,None,None,:].repeat(1,1,v_shp[2],v_shp[3],1)
 
-        x_sorted = votes.view_as(a_sort).gather(4, a_sort)
-        if self.add_random:
-            best = x_sorted[:,:,:,:,:self.out_sz]
-            rest = x_sorted[:,:,:,:,self.out_sz:]
-            idx_lucky = torch.randperm(rest.size(4))[:self.rnd_out_sz]
-            x_sorted = torch.cat([best,rest[:,:,:,:,idx_lucky]], dim=4)
-        else:
-            x_sorted = x_sorted[:,:,:,:,:self.out_sz]
+        x_sorted = votes.view(v_shp[0], v_shp[1], v_shp[2], v_shp[3], -1).gather(4, route_sort_id)
+        best = x_sorted[:,:,:,:,:self.sum_sz]
+        rest = x_sorted[:,:,:,:,self.sum_sz:]
+        idx_lucky = torch.randperm(rest.size(4))[:self.rnd_sz]
+        x_sorted = torch.cat([x_best,best,rest[:,:,:,:,idx_lucky]], dim=4)
 
-        idx = torch.randperm(self.out_sz+self.rnd_out_sz)
+        idx = torch.randperm(self.max_sz+self.sum_sz+self.rnd_sz)
         x_sorted = x_sorted[:,:,:,:,idx].unsqueeze(-1)        # batch, input_dim, output_dim, h, dim_x, dim_y
 
         return x_sorted, None # is None, to force bias detach
