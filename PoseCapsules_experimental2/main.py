@@ -9,6 +9,7 @@ import util
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import transforms
 from torchvision.utils import make_grid
@@ -47,7 +48,7 @@ if __name__ == '__main__':
     parser.add_argument('--disable_recon', action='store_true', help='Disable Reconstruction')
     parser.add_argument('--load_loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
     parser.add_argument('--pretrained',help='load pretrained epoch',type=int,nargs='?',const=-1,default=None,metavar='PERIOD')    
-    parser.add_argument('--recon_factor', type=float, default=2e-4, metavar='N', help='use reconstruction loss or not')
+    parser.add_argument('--recon_factor', type=float, default=5e-3, metavar='N', help='use reconstruction loss or not')
     parser.add_argument('--brightness', type=float, default=0, metavar='N', help='apply random brightness to images')
     parser.add_argument('--contrast', type=float, default=0, metavar='N', help='apply random contrast to images')
     parser.add_argument('--noise',help='Add noise value',type=float,default=.3,metavar='N')
@@ -73,7 +74,7 @@ if __name__ == '__main__':
     else:
         train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
         test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
-        loss_weight = 1
+        #loss_weight = 1
     #else:
     #    train_dataset = util.myTest(width=20, sz=5000, img_type=args.dataset) #, transform=transforms.Compose([transforms.ToTensor(),]))
     #    test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
@@ -86,11 +87,11 @@ if __name__ == '__main__':
     _, imgs, labels = sup_iterator.next()
     sup_iterator = train_loader.__iter__()
 
-    if loss_weight is not None:
-        loss_weight = torch.ones(labels.size(1))
-        loss_weight[6:9] *= 5
-    else:
-        loss_weight = torch.ones(labels.size(1))
+    #if loss_weight is not None:
+    #    loss_weight = torch.ones(labels.size(1))
+    #    loss_weight[6:9] *= 5
+    #else:
+    #    loss_weight = torch.ones(labels.size(1))
 
     """
     Setup model, load it to CUDA and make JIT compilation
@@ -99,19 +100,20 @@ if __name__ == '__main__':
     if args.normalize:
         normalize = args.normalize
     imgs = imgs[:2]
-    labels = labels[:2]
-    layers.lambda_ = 0.2 if args.pretrained else 1e-3
+    #labels = labels[:2]
+    lambda_max = 1.0
+    layers.lambda_ = lambda_max if args.pretrained else 1e-3
     model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=args.loss, normalize=normalize)
-    model(imgs, labels, args.disable_recon)
+    model(imgs, args.disable_recon)
 
     if not args.disable_cuda and torch.cuda.is_available():
         model.cuda()
-        labels = labels.cuda()
+        #labels = labels.cuda()
         imgs = imgs.cuda()
 
 
     if args.jit:
-        model = torch.jit.trace(model, (imgs, labels, args.disable_recon), check_inputs=[(imgs, labels, args.disable_recon)])
+        model = torch.jit.trace(model, (imgs, args.disable_recon), check_inputs=[(imgs, args.disable_recon)])
 
 
     print("# parameters:", sum(param.numel() for param in model.parameters()))
@@ -126,7 +128,7 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
     
     if args.loss == 'MSE':
-        caps_loss = MSELossWeighted(args.batch_size, 1.0)
+        caps_loss = MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
         #caps_loss = MSELossWeighted(torch.ones(labels.size(1)).cuda())
     else:
         #caps_loss = geodesic_loss()
@@ -225,10 +227,7 @@ if __name__ == '__main__':
                 """
                 optimizer.zero_grad()
 
-                out_labels, recon = model(imgs, labels, disable_recon=args.disable_recon)
-
-                if not args.disable_recon:
-                    recon = recon.view_as(imgs)
+                out_labels, recon = model(imgs, disable_recon=args.disable_recon)
 
                 #for param in model.image_decoder.parameters():
                 #    param.requires_grad = False
@@ -238,7 +237,18 @@ if __name__ == '__main__':
                 loss = caps_loss(out_labels, labels)
 
                 if not args.disable_recon:
-                    add_loss = recon_loss(recon, imgs)
+                    if imgs.shape[1] > 1:
+                        """ greyscale """
+                        i_imgs = (0.2989*imgs.data[:,0,:,:] + 0.5870*imgs.data[:,1,:,:] + 0.1140*imgs.data[:,2,:,:]).unsqueeze(1)
+                    else:
+                        i_imgs = imgs
+                    if i_imgs.shape[-1] > 100:
+                    #    new_shape = list(i_imgs.shape)
+                    #    new_shape[-2] = 100
+                    #    new_shape[-1] = 100
+                        i_imgs = F.interpolate(i_imgs, size=100)
+                    recon = recon.view_as(i_imgs)
+                    add_loss = recon_loss(recon, i_imgs)
                     loss += args.recon_factor * add_loss
                     loss_recon += args.recon_factor*add_loss.data.cpu().item() / args.batch_size
 
@@ -253,8 +263,8 @@ if __name__ == '__main__':
                 #    param.requires_grad = True
                 
                 layers.lambda_ += 0.0001
-                if layers.lambda_ > 1.:
-                    layers.lambda_ = 1.
+                if layers.lambda_ > lambda_max:
+                    layers.lambda_ = lambda_max
                 
 
                 loss /= args.batch_size
@@ -270,10 +280,18 @@ if __name__ == '__main__':
                 if not args.disable_recon:
                     #unsup_loss = capsloss(out_labels_unsup.view(labels_unsup.shape[0], -1)[:,:labels_unsup.shape[1]], labels_unsup)
                     #meter_loss_unsup.add(unsup_loss.data)
-                    pbar.set_postfix(loss=meter_loss.value()[0], recon_=recon.sum().data.cpu().item())
+                    pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
                 else:
-                    pbar.set_postfix(loss=meter_loss.value()[0], medErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
+                    pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
                 pbar.update()
+
+
+
+            if not args.disable_recon:
+                ground_truth_logger_left.log(make_grid(i_imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+                reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+
+
                 
             """
             Test Loop
@@ -303,15 +321,26 @@ if __name__ == '__main__':
                         labels = labels.cuda()
     
         
-                    out_labels, recon = model(imgs, labels, disable_recon=args.disable_recon)
+                    out_labels, recon = model(imgs, disable_recon=args.disable_recon)
         
-                    if not args.disable_recon:
-                        recon = recon.view_as(imgs)
         
                     loss = caps_loss(out_labels, labels) / args.batch_size
                     test_loss += loss.data.cpu().item()
+
                     if not args.disable_recon:
-                        add_loss = args.recon_factor * recon_loss(recon, imgs) / args.batch_size
+                        if imgs.shape[1] > 1:
+                            """ greyscale """
+                            i_imgs = (0.2989*imgs.data[:,0,:,:] + 0.5870*imgs.data[:,1,:,:] + 0.1140*imgs.data[:,2,:,:]).unsqueeze(1)
+                        else:
+                            i_imgs = imgs
+                        if i_imgs.shape[-1] > 100:
+                        #    new_shape = list(i_imgs.shape)
+                        #    new_shape[-2] = 100
+                        #    new_shape[-1] = 100
+                            i_imgs = F.interpolate(i_imgs, size=100)
+                        recon = recon.view_as(i_imgs)
+                        
+                        add_loss = args.recon_factor * recon_loss(recon, i_imgs) / args.batch_size
                         loss += add_loss
                         test_loss_recon += add_loss.data.cpu().item()
                 
@@ -339,8 +368,6 @@ if __name__ == '__main__':
             """
 
             if not args.disable_recon:
-                ground_truth_logger_left.log(make_grid(imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
-                reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
                 train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
                 test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
             

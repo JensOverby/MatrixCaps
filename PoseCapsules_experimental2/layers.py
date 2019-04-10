@@ -84,15 +84,23 @@ class PosEncoderLayer(nn.Module):
             w = x.shape[-1]
 
             """
-            row = torch.zeros(w)
-            step = math.pi/(w-1)
-            for i in range(w):
-                row[i] = math.sin(i*step)
+            sz = 1
+            while sz < w:
+                sz *= 2
+            row = torch.zeros(sz)
+            sz0 = sz
+
+            row = torch.zeros(sz)
+            while sz > 8:
+                for i in range(sz0):
+                    theta = 2*math.pi*i/sz
+                    row[i] += math.sin(theta)
+                sz /= 2
+
+            for i in range(sz0):
+                print(row[i].item())
+
             """
-
-
-            #self.m = torch.arange(w*w).float().view(w,w)
-
             sz = 1
             while sz < w:
                 sz *= 2
@@ -107,6 +115,7 @@ class PosEncoderLayer(nn.Module):
                     value = not value
                 step *= 2
                 value = False
+            
     
             row = row[:w]
 
@@ -115,7 +124,7 @@ class PosEncoderLayer(nn.Module):
                 row_list.append(row)
             self.m = torch.stack(row_list)
             self.m = self.m + self.m.transpose(1,0)
-            
+            self.m = self.m - self.m.min()
             self.m = self.m / self.m.max()
 
         if x.device != self.m.device:
@@ -496,10 +505,7 @@ class MatrixRouting(nn.Module):
 class MaxRoutePool(nn.Module):
     def __init__(self, kernel_size, stride=None):
         super(MaxRoutePool, self).__init__()
-        self.kernel_size = kernel_size
-        self.stride = stride
         self.maxpool = nn.MaxPool2d(kernel_size, stride, return_indices=True)
-        self.not_initialized = True
         
     def forward(self, x):
         """
@@ -509,9 +515,9 @@ class MaxRoutePool(nn.Module):
 
         """ If previous was VectorRouting """
         if len(x) == 3:
-            votes, route = x[2], x[1]
+            y, route, votes = x
         else:
-            votes, route = x[0], x[1]
+            votes, route = x
         
         #routing = x[1].max(dim=1)[0] # batch, output_dim, dim_x, dim_y
         #routing = x[1].sum(dim=1) # batch, output_dim, dim_x, dim_y
@@ -525,7 +531,6 @@ class MaxRoutePool(nn.Module):
         votes = votes.view(v_shp[0],v_shp[1],v_shp[2],v_shp[3],-1).gather(4, indices).view(v_shp[0],v_shp[1],v_shp[2],v_shp[3],i_shp[-2],i_shp[-1])
         return (votes, route)
 
-
 class MaxRouteReduce(nn.Module):
     def __init__(self, out_sz, max_pct=37., sum_pct=37.):
         super(MaxRouteReduce, self).__init__()
@@ -534,14 +539,66 @@ class MaxRouteReduce(nn.Module):
         self.rnd_sz = out_sz - self.max_sz - self.sum_sz
         
     def forward(self, x):
-
         """ Calculate routing coefficients """
         # votes: batch, input_dim, output_dim, h, dim_x, dim_y
         # route: batch, input_dim, output_dim, dim_x, dim_y
-        
-        #capsule_routing = x[1].max(dim=1)[0] # batch, output_dim, dim_x, dim_y
-        #capsule_routing = x[1].sum(dim=1) # batch, output_dim, dim_x, dim_y
+
         """ If previous was VectorRouting """
+        if len(x) == 3:
+            _, route, votes = x
+        else:
+            votes, route = x
+
+        b, input_dim, output_dim, h, _, _ = votes.shape
+        votes = votes.view(b, input_dim, output_dim, h, -1)
+        route = route.view(b, input_dim, output_dim, -1) # batch, input_dim, output_dim, dim_x*dim_y
+
+        segment_list = []
+
+        """
+        if self.a_sum_sz != 0:
+            a = x[:,:,:,:,h-1].view(b, output_dim, -1) # b, output_dim, w_x*w_y
+            oper = a.sum(dim=1) # batch, dim_x*dim_y
+            sort_id = oper.sort(1, descending=True)[1] 
+            sort_id = sort_id[:,None,None,:].repeat(1,input_dim,output_dim,1)# batch, input_dim, output_dim, dim_x*dim_y
+            sort_id_h = sort_id[:,:,:,None,:].repeat(1,1,1,h,1)# batch, input_dim, output_dim, h, dim_x*dim_y
+            segment_list.append( votes.gather(4, sort_id_h[:,:,:,:,:self.a_sum_sz]) )
+            votes = votes.gather(4, sort_id_h[:,:,:,:,self.a_sum_sz:])
+            route = route.gather(3, sort_id[:,:,:,self.a_sum_sz:])
+        """
+
+        if self.max_sz != 0:
+            oper = route.max(dim=2)[0] # batch, input_dim, dim_x*dim_y
+            sort_id = oper.sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
+            sort_id = sort_id[:,:,None,:].repeat(1,1,output_dim,1) # batch, input_dim, output_dim, dim_x*dim_y
+            sort_id_h = sort_id[:,:,:,None,:].repeat(1,1,1,h,1) # batch, input_dim, output_dim, h, dim_x*dim_y
+            segment_list.append( votes.gather(4, sort_id_h[:,:,:,:,:self.max_sz]) )
+            votes = votes.gather(4, sort_id_h[:,:,:,:,self.max_sz:])
+            route = route.gather(3, sort_id[:,:,:,self.max_sz:])
+
+        if self.sum_sz != 0:
+            oper = route.sum(dim=2)
+            sort_id = oper.sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
+            sort_id = sort_id[:,:,None,:].repeat(1,1,output_dim,1) # batch, input_dim, output_dim, dim_x*dim_y
+            sort_id_h = sort_id[:,:,:,None,:].repeat(1,1,1,h,1) # batch, input_dim, output_dim, h, dim_x*dim_y
+            segment_list.append( votes.gather(4, sort_id_h[:,:,:,:,:self.sum_sz]) )
+            votes = votes.gather(4, sort_id_h[:,:,:,:,self.sum_sz:])
+            #route = route.gather(3, sort_id[:,:,:,self.sum_sz:])
+
+        if self.rnd_sz != 0:
+            idx_lucky = torch.randperm(votes.shape[4])[:self.rnd_sz]
+            segment_list.append( votes[:,:,:,:,idx_lucky] )
+
+        votes = torch.cat(segment_list, dim=4)
+
+        idx = torch.randperm(votes.shape[4])
+        votes_sorted = votes[:,:,:,:,idx].unsqueeze(-1)        # batch, input_dim, output_dim, h, dim_x, dim_y
+
+        return votes_sorted, None # is None, to force bias detach
+
+
+
+        """
         if len(x) == 3:
             votes, route = x[2], x[1]
         else:
@@ -560,7 +617,6 @@ class MaxRouteReduce(nn.Module):
         #capsule_routing = x[1].view(-1, x_sh[1], x_sh[-2], x_sh[-1])
         route_sum = route_rest.sum(dim=2) # batch, input_dim, dim_x, dim_y
 
-        """ Rank routing coefficients """
         route_sort_id = route_sum.view(v_shp[0], v_shp[1], -1).sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
         route_sort_id = route_sort_id[:,:,None,None,:].repeat(1,1,v_shp[2],v_shp[3],1)
 
@@ -574,9 +630,132 @@ class MaxRouteReduce(nn.Module):
         x_sorted = x_sorted[:,:,:,:,idx].unsqueeze(-1)        # batch, input_dim, output_dim, h, dim_x, dim_y
 
         return x_sorted, None # is None, to force bias detach
+        """
 
-        #x = x_sorted.permute(0, 1, 3, 4, 2).contiguous()    # batch_size, input_dim, output_dim, dim_x, dim_y, input_atoms
-        #return (x.view(x.size(0), -1, x.size(-1), 1, 1))    # batch_size, input_dim*dim_x*dim_y, input_atoms, 1, 1
+"""
+class MaxRouteReduce(nn.Module):
+    def __init__(self, route_max_sz=37, route_sum_sz=38, a_max_sz=37, a_sum_sz=38, rnd_sz=0, kernel_size=0, stride=0):
+        super(MaxRouteReduce, self).__init__()
+        self.route_max_sz=route_max_sz
+        self.route_sum_sz=route_sum_sz
+        self.a_max_sz=a_max_sz
+        self.a_sum_sz=a_sum_sz
+        self.rnd_sz=rnd_sz
+        
+        if kernel_size!=0 and stride!=0:
+            self.maxpool = nn.MaxPool2d(kernel_size, stride, return_indices=True)
+        else:
+            self.maxpool = None
+
+    
+    def forward2(self, x):
+        #if self.use_old:
+        #    return self.forward2(x)
+
+        shp = x[0].shape
+        a = x[0][:,:,:,:,shp[-1]-1:]   # b, output_dim, w_x, w_y, 1
+        a_max = a.max(dim=1)[0] # b, self.max_sz, 1
+        a_sort_id = a_max.view(shp[0], -1).sort(1, descending=True)[1]
+        a_sort_id = a_sort_id[:,None,:,None].repeat(1,shp[1],1,shp[-1])
+        x_best = x[0].view(shp[0], shp[1], -1, shp[-1]).gather(2, a_sort_id[:,:,:self.max_sz,:])
+
+        x_rest = x[0].view(shp[0], shp[1], -1, shp[-1]).gather(2, a_sort_id[:,:,self.max_sz:,:])
+
+        a = x_rest[:,:,:,shp[-1]-1:]   # b, output_dim, self.max_sz, 1
+        a_sum = a.sum(dim=1) # b, self.max_sz, 1
+        a_sort_id = a_sum.view(shp[0], -1).sort(1, descending=True)[1]
+        a_sort_id = a_sort_id[:,None,:,None].repeat(1,shp[1],1,shp[-1])
+        x_2best = x_rest.gather(2, a_sort_id[:,:,:self.sum_sz,:])
+
+        x_rest = x_rest.gather(2, a_sort_id[:,:,self.sum_sz:,:])
+
+        idx_lucky = torch.randperm(x_rest.size(2))[:self.rnd_sz]
+        x_sorted = torch.cat([x_best,x_2best,x_rest[:,:,idx_lucky,:]], dim=2)
+
+        idx = torch.randperm(self.max_sz+self.sum_sz+self.rnd_sz)
+        x_sorted = x_sorted[:,:,idx,:].unsqueeze(3)        # batch, output_dim, dim_x*dim_y, 1, h
+        return x_sorted
+
+    def forward(self, x):
+        x, route, _ = x
+        b, output_dim, _, _, h = x.shape
+        x = x.view(b, output_dim, -1, h)
+        a = x[:,:,:,h-1]   # b, output_dim, w_x, w_y
+        route = route.sum(1)
+
+        segment_list = []
+        
+        if self.maxpool is not None:
+            _, sort_id = self.maxpool(route)
+            sort_id = sort_id.view(b, output_dim, -1)
+            route = route.view(b, output_dim, -1)
+            sort_id_h = sort_id[:,:,:,None].repeat(1,1,1,h)
+            segment_list.append( x.gather(2, sort_id_h) )
+
+            offset = torch.arange(b*output_dim, device=x.device).unsqueeze(-1).repeat(1,sort_id.shape[-1]) * x.shape[-2]
+            offset = offset.view_as(sort_id)
+            mask = torch.ones(route.shape, device=x.device, dtype=torch.uint8)
+            sort_id_trans = sort_id + offset
+            mask.view(-1)[sort_id_trans.view(-1)] = 0
+            route = torch.masked_select(route, mask).view(b, output_dim, -1)
+            a = torch.masked_select(a, mask).view(b, output_dim, -1)
+            mask = mask[:,:,:,None].repeat(1,1,1,h)
+            x = torch.masked_select(x, mask).view(b, output_dim, -1, h)
+        else:
+            route = route.view(b, output_dim, -1)
+            
+        if self.route_max_sz != 0:
+            oper = route.max(dim=1)[0]
+            sort_id = oper.sort(1, descending=True)[1] # batch, input_dim, dim_x*dim_y
+            sort_id = sort_id[:,None,:].repeat(1,output_dim,1)
+            sort_id_h = sort_id[:,:,:,None].repeat(1,1,1,h)
+            segment_list.append( x.gather(2, sort_id_h[:,:,:self.route_max_sz,:]) )
+            x = x.gather(2, sort_id_h[:,:,self.route_max_sz:,:])
+            route = route.gather(2,sort_id[:,:,self.route_max_sz:])
+            a = a.gather(2,sort_id[:,:,self.route_max_sz:])
+
+        if self.route_sum_sz != 0:
+            oper = route.sum(dim=1)
+            sort_id = oper.sort(1, descending=True)[1] # batch, input_dim, dim_x*dim_y
+            sort_id = sort_id[:,None,:].repeat(1,output_dim,1)
+            sort_id_h = sort_id[:,:,:,None].repeat(1,1,1,h)
+            segment_list.append( x.gather(2, sort_id_h[:,:,:self.route_sum_sz,:]) )
+            x = x.gather(2, sort_id_h[:,:,self.route_sum_sz:,:])
+            #route = route.gather(2,sort_id[:,:,self.route_sum_sz:])
+            a = a.gather(2,sort_id[:,:,self.route_sum_sz:])
+
+
+        if self.a_max_sz != 0:
+            oper = a.max(dim=1)[0]
+            sort_id = oper.sort(1, descending=True)[1] # batch, input_dim, dim_x*dim_y
+            sort_id = sort_id[:,None,:].repeat(1,output_dim,1)
+            sort_id_h = sort_id[:,:,:,None].repeat(1,1,1,h)
+            segment_list.append( x.gather(2, sort_id_h[:,:,:self.a_max_sz,:]) )
+            x = x.gather(2, sort_id_h[:,:,self.a_max_sz:,:])
+            #route = route.gather(2,sort_id[:,:,self.a_max_sz:])
+            a = a.gather(2,sort_id[:,:,self.a_max_sz:])
+
+        if self.a_sum_sz != 0:
+            oper = a.sum(dim=1)
+            sort_id = oper.sort(1, descending=True)[1] # batch, input_dim, dim_x*dim_y
+            sort_id = sort_id[:,None,:].repeat(1,output_dim,1)
+            sort_id_h = sort_id[:,:,:,None].repeat(1,1,1,h)
+            segment_list.append( x.gather(2, sort_id_h[:,:,:self.a_sum_sz,:]) )
+            x = x.gather(2, sort_id_h[:,:,self.a_sum_sz:,:])
+            #route = route.gather(2,sort_id[:,:,self.a_sum_sz:])
+            #a = a.gather(2,sort_id[:,:,self.a_sum_sz:])
+
+        if self.rnd_sz != 0:
+            idx_lucky = torch.randperm(x.shape[2])[:self.rnd_sz]
+            segment_list.append( x[:,:,idx_lucky,:] )
+        
+        x = torch.cat(segment_list, dim=2)
+        
+        idx = torch.randperm(x.shape[2])
+        x = x[:,:,idx,:].unsqueeze(3)
+        
+        return x, None
+"""
 
 class KeyRouting(nn.Module):
     def __init__(self, conv_layer, pre_conv_x_obj):

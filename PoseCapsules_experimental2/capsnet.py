@@ -17,7 +17,7 @@ from batchrenorm import BatchRenorm
 from sparse import SparseCoding
 
 class MSELossWeighted(nn.Module):
-    def __init__(self, batch_size=1, transition_loss=0., weight=None, weight2=None):
+    def __init__(self, batch_size=1, transition_loss=0., weight=None, weight2=None, pretrained=False):
         super(MSELossWeighted, self).__init__()
         if weight is None:
             weight = torch.tensor([4.,4.,4.,4.,4.,4.,1.,1.,1.,1.]).cuda()
@@ -29,6 +29,7 @@ class MSELossWeighted(nn.Module):
         self.transition_loss = transition_loss
         self.batch_size = batch_size
         self.weight2 = weight2
+        self.pretrained = pretrained
         self.trans = (weight2 - weight) / 300.
         self.count = -1
         
@@ -44,6 +45,9 @@ class MSELossWeighted(nn.Module):
             else:
                 if loss/self.batch_size < self.transition_loss:
                     self.count = 0
+                    if self.pretrained:
+                        self.weight = self.weight2
+                        self.count = 300
         return loss        
 
 
@@ -202,49 +206,52 @@ class CapsNet(nn.Module):
             layer_list['conv1'] = layers.CapsuleLayer(output_dim=8, h=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 5, 'padding': 0})
             layer_list['conv2'] = layers.CapsuleLayer(output_dim=8, h=4, num_routing=3, voting={'type': 'Conv2d', 'stride': 1, 'kernel_size': 4, 'padding': 0})
         elif img_shape[-1] == 100:
-            #100->50->38->6
-            """
-            layer_list['conv1'] = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=21, stride=2, padding=10, bias=True)
-            layer_list['bn1'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu1'] = nn.ReLU(inplace=True)
-            layer_list['conv2'] = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=11, stride=2, padding=5, bias=True)
-            layer_list['bn2'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu2'] = nn.ReLU(inplace=True)
-            """
 
-            sz = layers.calc_out(100, kernel=7, stride=2, padding=3)
-            sz = layers.calc_out(sz, kernel=7, stride=1)
-            sz = layers.calc_out(sz, kernel=7, stride=2, padding=3)
-            sz = layers.calc_out(sz, kernel=7, stride=1)
+            layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0]+1, out_channels=10, kernel_size=15, stride=1, padding=7, bias=True)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            nn.init.normal_(layer_list['conv1'].bias.data, mean=0,std=0.1)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=10, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+
             
-            #100->50->44->22->16
-            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0], out_channels=16, kernel_size=7, stride=2, padding=0, bias=True)
-            layer_list['bn1'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu1'] = nn.ReLU(inplace=True)
-            layer_list['conv2'] = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=7, stride=1, padding=0, bias=True)
-            layer_list['bn2'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu2'] = nn.ReLU(inplace=True)
-            layer_list['conv3'] = nn.Conv2d(in_channels=16, out_channels=16, kernel_size=7, stride=2, padding=3, bias=True)
-            layer_list['bn3'] = nn.BatchNorm2d(num_features=16, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu3'] = nn.ReLU(inplace=True)
-            layer_list['conv2prim'] = layers.ConvToPrim()
-            layer_list['prim1'] = layers.CapsuleLayer(output_dim=16, h=12, num_routing=1, voting={'type': 'Conv2d', 'sort': 64, 'stride': 1, 'kernel_size': 7, 'padding': 0})
-            layer_list['prim2caps'] = layers.PrimToCaps()
-            layer_list['caps1'] = layers.CapsuleLayer(output_dim=16, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['caps2'] = layers.CapsuleLayer(output_dim=16, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['caps3'] = layers.CapsuleLayer(output_dim=16, h=12, num_routing=3, voting={'type': 'standard'})
-            layer_list['caps4'] = layers.CapsuleLayer(output_dim=1, h=output_atoms, num_routing=3, voting={'type': 'standard'})
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=15, stride=2, padding=7, bias=True, activate=True)
+            layer_list['bnn1'] = BNLayer()
+            #layer_list['prim1'].register_backward_hook(hookFunc)
+            layer_list['route1'] = layers.MatrixRouting(output_dim=8, num_routing=1)
+            #pathway1 = []
+            #layer_list['store_pathway1'] = StoreLayer(pathway1)
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['bnn2'] = BNLayer()
+            layer_list['route2'] = layers.MatrixRouting(output_dim=8, num_routing=3)
+            #layer_list['concat_pathway1'] = ConcatLayer(pathway1, 1)
+            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['bnn3'] = BNLayer()
+            layer_list['route3'] = layers.MatrixRouting(output_dim=8, num_routing=3)
+            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=150) #, max_pct=75., sum_pct=0.)
+            #layer_list['route3a'] = layer_list['route3']
 
-            #self.image_decoder = layers.make_decoder( layers.make_decoder_list([output_dim, 512, 1024, 2048, 4096, img_shape[-1]**2 * 3], 'sigmoid') )
+            layer_list['up1'] = UpsampleLayer(1)
+            layer_list['caps1'] = layers.MatrixCaps(output_dim=32, hh=16)
+            layer_list['route1c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+            pathway3 = []
+            layer_list['store_pathway3'] = StoreLayer(pathway3)
+            layer_list['caps2'] = layers.MatrixCaps(output_dim=32, hh=16)
+            layer_list['route2c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+            layer_list['concat2c'] = ConcatLayer(pathway3, 1, keep_original=True)
+            layer_list['caps3'] = layers.MatrixCaps(output_dim=32, hh=16)
+            layer_list['route3c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+            #layer_list['concat3c'] = ConcatLayer(pathway3, 1, keep_original=True)
+            layer_list['sparse3c'] = SparseCoding(False)
+            layer_list['route3c_again'] = layer_list['route3c']
+            pathway4 = []
+            layer_list['store_pathway4'] = StoreLayer(pathway4)
+            decoder_input_atoms = 10
+            layer_list['caps4'] = layers.MatrixCaps(output_dim=1, hh=16) #decoder_input_atoms)
+            layer_list['route4c'] = layers.MatrixRouting(output_dim=1, num_routing=3)
+            layer_list['out'] = layers.MatrixToOut(decoder_input_atoms)
 
-            """
-            kernel_size = 21
-            layer_list['primary'] = layers.CapsuleLayer(output_dim=8, h=8, num_routing=1, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 17, 'padding': 0})
-            layer_list['conv1'] = layers.CapsuleLayer(output_dim=8, h=8, num_routing=3, voting={'type': 'Conv2d', 'stride': 2, 'kernel_size': 9, 'padding': 0})
-            layer_list['conv2'] = layers.CapsuleLayer(output_dim=8, h=16, num_routing=3, voting={'type': 'standard'})
-            layer_list['conv3'] = layers.CapsuleLayer(output_dim=8, h=16, num_routing=3, voting={'type': 'standard'})
-            layer_list['conv4'] = layers.CapsuleLayer(output_dim=1, h=16, num_routing=3, voting={'type': 'standard'})
-            """
+            self.image_decoder = None
 
         elif img_shape[-1] == 20:
             if dataset == 'simple_angle':
@@ -290,7 +297,7 @@ class CapsNet(nn.Module):
         elif img_shape[-1] == 400:
 
             """ Positional Hierarchical Binary Coding layer """
-            layer_list['posenc'] = layers.PosEncoderLayer()
+            #layer_list['posenc'] = layers.PosEncoderLayer()
             
             """ First convolutional layer with stride 1 """
             layer_list['posenc'] = layers.PosEncoderLayer()
@@ -304,7 +311,7 @@ class CapsNet(nn.Module):
             layer_list['prim1'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=15, stride=2, padding=7, bias=True, activate=True)
             layer_list['bnn1'] = BNLayer()
             layer_list['route1'] = layers.MatrixRouting(output_dim=4, num_routing=1)
-            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=9, stride=2, padding=4, bias=False)
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=9, stride=1, padding=4, bias=False)
             layer_list['bnn2'] = BNLayer()
             layer_list['route2'] = layers.MatrixRouting(output_dim=4, num_routing=3)
             layer_list['prim3'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=9, stride=2, padding=4, bias=False)
@@ -312,23 +319,26 @@ class CapsNet(nn.Module):
             layer_list['route3'] = layers.MatrixRouting(output_dim=8, num_routing=3)
 
             """ Dimensionality Reduction Block """
-            #layer_list['maxpool'] = layers.MaxRoutePool(kernel_size=2)
-            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=150) #, max_pct=75., sum_pct=0.)
-            layer_list['route3a'] = layer_list['route3']
+            layer_list['pool'] = layers.MaxRoutePool(kernel_size=4, stride=4)
+            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
+            layer_list['route_pool'] = layers.MatrixRouting(output_dim=8, num_routing=3)
+            
+            #layer_list['maxreduce'] = layers.MaxRouteReduce() #, max_pct=75., sum_pct=0.)
+            #layer_list['route3a'] = layer_list['route3']
 
             """ Normal Capsules Block with skip connection """
             layer_list['up1'] = UpsampleLayer(1)
             layer_list['caps1'] = layers.MatrixCaps(output_dim=32, hh=16)
             layer_list['route1c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
-            pathway3 = []
-            layer_list['store_pathway3'] = StoreLayer(pathway3)
+            #pathway3 = []
+            #layer_list['store_pathway3'] = StoreLayer(pathway3)
             layer_list['caps2'] = layers.MatrixCaps(output_dim=32, hh=16)
             layer_list['route2c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
-            layer_list['concat2c'] = ConcatLayer(pathway3, 1, keep_original=True)
+            #layer_list['concat2c'] = ConcatLayer(pathway3, 1, keep_original=True)
             layer_list['caps3'] = layers.MatrixCaps(output_dim=32, hh=16)
             layer_list['route3c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
-            layer_list['sparse3c'] = SparseCoding(False)
-            layer_list['route3c_again'] = layer_list['route3c']
+            #layer_list['sparse3c'] = SparseCoding(False)
+            #layer_list['route3c_again'] = layer_list['route3c']
             pathway4 = []
             layer_list['store_pathway4'] = StoreLayer(pathway4)
             decoder_input_atoms = 10
@@ -372,30 +382,33 @@ class CapsNet(nn.Module):
             layer_list['relu1'] = nn.ReLU(inplace=True)
 
             
-            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=15, stride=2, padding=7, bias=True, activate=True)
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=15, stride=1, padding=7, bias=True, activate=True)
             layer_list['bnn1'] = BNLayer()
             #layer_list['prim1'].register_backward_hook(hookFunc)
-            layer_list['route1'] = layers.MatrixRouting(output_dim=8, num_routing=1)
+            layer_list['route1'] = layers.MatrixRouting(output_dim=4, num_routing=1)
             #pathway1 = []
             #layer_list['store_pathway1'] = StoreLayer(pathway1)
-            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=9, stride=1, padding=4, bias=False)
             layer_list['bnn2'] = BNLayer()
-            layer_list['route2'] = layers.MatrixRouting(output_dim=8, num_routing=3)
+            layer_list['route2'] = layers.MatrixRouting(output_dim=4, num_routing=3)
             #layer_list['concat_pathway1'] = ConcatLayer(pathway1, 1)
             layer_list['prim3'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=9, stride=1, padding=4, bias=False)
             layer_list['bnn3'] = BNLayer()
             layer_list['route3'] = layers.MatrixRouting(output_dim=8, num_routing=3)
-            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=150) #, max_pct=75., sum_pct=0.)
-            layer_list['route3a'] = layer_list['route3']
+            #layer_list['maxreduce'] = layers.MaxRouteReduce(route_max_sz=40, route_sum_sz=40, a_max_sz=40, a_sum_sz=40, rnd_sz=0, kernel_size=5, stride=5)
+            layer_list['pool'] = layers.MaxRoutePool(kernel_size=2, stride=2)
+            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
+            layer_list['route_pool'] = layers.MatrixRouting(output_dim=8, num_routing=3)
+            #layer_list['route3a'] = layer_list['route3']
 
             layer_list['up1'] = UpsampleLayer(1)
             layer_list['caps1'] = layers.MatrixCaps(output_dim=32, hh=16)
             layer_list['route1c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
-            pathway3 = []
-            layer_list['store_pathway3'] = StoreLayer(pathway3)
+            #pathway3 = []
+            #layer_list['store_pathway3'] = StoreLayer(pathway3)
             layer_list['caps2'] = layers.MatrixCaps(output_dim=32, hh=16)
             layer_list['route2c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
-            layer_list['concat2c'] = ConcatLayer(pathway3, 1, keep_original=True)
+            #layer_list['concat2c'] = ConcatLayer(pathway3, 1, keep_original=True)
             layer_list['caps3'] = layers.MatrixCaps(output_dim=32, hh=16)
             layer_list['route3c'] = layers.MatrixRouting(output_dim=32, num_routing=3)
             #layer_list['concat3c'] = ConcatLayer(pathway3, 1, keep_original=True)
@@ -409,37 +422,6 @@ class CapsNet(nn.Module):
             layer_list['out'] = layers.MatrixToOut(decoder_input_atoms)
 
             self.image_decoder = None
-            
-            """
-            layer_list['posenc'] = layers.PosEncoderLayer()
-            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0]+1, out_channels=8, kernel_size=15, stride=1, padding=7, bias=True)
-            layer_list['bn1'] = nn.BatchNorm2d(num_features=8, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu1'] = nn.ReLU(inplace=True)
-            layer_list['prim1'] = layers.ConvVector2d(output_dim=2, h=8, kernel_size=15, stride=2, padding=7, bias=False)
-            layer_list['route1'] = layers.VectorRouting(num_routing=1)
-            layer_list['prim2'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
-            layer_list['route2'] = layers.VectorRouting(num_routing=3)
-            layer_list['prim3'] = layers.ConvVector2d(output_dim=4, h=8, kernel_size=9, stride=1, padding=4, bias=False)
-            layer_list['route3'] = layers.VectorRouting(num_routing=3)
-            layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
-            layer_list['route3a'] = layer_list['route3']
-
-            layer_list['caps1'] = layers.ConvCaps(output_dim=32, h=12)
-            pathway = []
-            layer_list['branch'] = StoreLayer(pathway)
-            layer_list['route1c'] = layers.VectorRouting(num_routing=3)
-            layer_list['caps2'] = layers.ConvCaps(output_dim=32, h=12)
-            layer_list['concat2c'] = ConcatLayer(pathway, 1)
-            layer_list['route2c'] = layers.VectorRouting(num_routing=3)
-            layer_list['caps3'] = layers.ConvCaps(output_dim=32, h=12)
-            layer_list['concat3c'] = ConcatLayer(pathway, 1)
-            layer_list['route3c'] = layers.VectorRouting(num_routing=3)
-            layer_list['sparse3c'] = SparseCoding(True)
-            layer_list['route3ca'] = layer_list['route3c']
-            decoder_input_atoms = 10
-            layer_list['caps4'] = layers.ConvCaps(output_dim=1, h=decoder_input_atoms)
-            layer_list['route4c'] = layers.VectorRouting(num_routing=3)
-            """
 
         self.capsules = nn.Sequential(layer_list)
 
@@ -449,7 +431,13 @@ class CapsNet(nn.Module):
             self.target_decoder = layers.make_decoder( layers.make_decoder_list([decoder_input_atoms, 512, 512, output_atoms], 'tanh') )
             self.target_decoder.add_module('scale_pi', layers.ScaleLayer(math.pi))
 
-    def forward(self, x, y, disable_recon=False):
+        #kaj = list(self.capsules.named_children())
+        #kaj.insert(-4, ('route3c_again', kaj[-6][1]))
+        #layer_list = OrderedDict(kaj)
+        #self.capsules = nn.Sequential(layer_list)
+        #self.capsules.maxreduce.use_old=False
+
+    def forward(self, x, disable_recon=False):
 
         conv_cap,_,_ = self.capsules(x)
 
@@ -507,14 +495,14 @@ class CapsNet(nn.Module):
 
         #out = None #self.target_decoder(p)
 
-        if (not disable_recon): # or (self.image_decoder is None):
-            layer = self.capsules[-4].container[0][0].view(p.shape[0], -1)
-            layer = torch.cat([layer, p], dim=1)
-
+        if not disable_recon: # or self.image_decoder is None:
             if self.image_decoder is None:
-                self.image_decoder = layers.make_decoder( layers.make_decoder_list([layer.shape[1], 1024, 2048, 4096, x.shape[-1]**2], 'sigmoid') )
+                sz = x.shape[-1]
+                if sz > 100:
+                    sz = 100
+                self.image_decoder = layers.make_decoder( layers.make_decoder_list([p.shape[1], 512, 2048, 4096, sz**2], 'sigmoid')) #.cuda(layer.device)
             
-            reconstructions = self.image_decoder(layer)
+            reconstructions = self.image_decoder(p)
         else:
             reconstructions = torch.zeros(1)
             
