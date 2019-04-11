@@ -311,7 +311,7 @@ class CapsNet(nn.Module):
             layer_list['prim1'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=15, stride=2, padding=7, bias=True, activate=True)
             layer_list['bnn1'] = BNLayer()
             layer_list['route1'] = layers.MatrixRouting(output_dim=4, num_routing=1)
-            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=9, stride=1, padding=4, bias=False)
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=4, h=9, kernel_size=9, stride=2, padding=4, bias=False)
             layer_list['bnn2'] = BNLayer()
             layer_list['route2'] = layers.MatrixRouting(output_dim=4, num_routing=3)
             layer_list['prim3'] = layers.PrimMatrix2d(output_dim=8, h=9, kernel_size=9, stride=2, padding=4, bias=False)
@@ -319,7 +319,7 @@ class CapsNet(nn.Module):
             layer_list['route3'] = layers.MatrixRouting(output_dim=8, num_routing=3)
 
             """ Dimensionality Reduction Block """
-            layer_list['pool'] = layers.MaxRoutePool(kernel_size=4, stride=4)
+            layer_list['pool'] = layers.MaxRoutePool(kernel_size=2, stride=2)
             layer_list['maxreduce'] = layers.MaxRouteReduce(out_sz=100)
             layer_list['route_pool'] = layers.MatrixRouting(output_dim=8, num_routing=3)
             

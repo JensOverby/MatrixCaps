@@ -515,21 +515,29 @@ class MaxRoutePool(nn.Module):
 
         """ If previous was VectorRouting """
         if len(x) == 3:
-            y, route, votes = x
+            _, route, votes = x
         else:
             votes, route = x
         
-        #routing = x[1].max(dim=1)[0] # batch, output_dim, dim_x, dim_y
-        #routing = x[1].sum(dim=1) # batch, output_dim, dim_x, dim_y
+        v_shp = votes.shape
+        route = route.view(-1, 1, route.shape[3], route.shape[4])
+        route, indices = self.maxpool(route)
+        i_shp = indices.shape
+        route = route.view(v_shp[0],v_shp[1],v_shp[2],i_shp[2],i_shp[3])
+        indices = indices.view(v_shp[0], v_shp[1], v_shp[2], 1, -1).repeat(1,1,1,v_shp[3],1)
+        votes = votes.view(v_shp[0],v_shp[1],v_shp[2],v_shp[3],-1).gather(4, indices).view(v_shp[0],v_shp[1],v_shp[2],v_shp[3],i_shp[-2],i_shp[-1])
+        return (votes, route)
+
+        """
         route = route.view(-1, route.shape[2], route.shape[3], route.shape[4])
-        _, indices = self.maxpool(route)
+        route, indices = self.maxpool(route)
         v_shp = votes.shape
         i_shp = indices.shape
-        indices = indices.view(i_shp[0],i_shp[1],-1)
-        route = route.view(i_shp[0],i_shp[1],-1).gather(2, indices).view(v_shp[0],v_shp[1],i_shp[1],i_shp[2],i_shp[3])
+        route = route.view(v_shp[0],v_shp[1],i_shp[1],i_shp[2],i_shp[3])
         indices = indices.view(v_shp[0], v_shp[1], i_shp[1], 1, -1).repeat(1,1,1,v_shp[3],1)
         votes = votes.view(v_shp[0],v_shp[1],v_shp[2],v_shp[3],-1).gather(4, indices).view(v_shp[0],v_shp[1],v_shp[2],v_shp[3],i_shp[-2],i_shp[-1])
         return (votes, route)
+        """
 
 class MaxRouteReduce(nn.Module):
     def __init__(self, out_sz, max_pct=37., sum_pct=37.):
@@ -567,6 +575,15 @@ class MaxRouteReduce(nn.Module):
             route = route.gather(3, sort_id[:,:,:,self.a_sum_sz:])
         """
 
+        sz = self.max_sz+self.sum_sz
+        #oper = route.max(dim=2)[0] # batch, input_dim, dim_x*dim_y
+        sort_id = route.sort(3, descending=True)[1] # batch, input_dim, output_dim, dim_x*dim_y
+        sort_id_h = sort_id[:,:,:,None,:].repeat(1,1,1,h,1) # batch, input_dim, output_dim, h, dim_x*dim_y
+        segment_list.append( votes.gather(4, sort_id_h[:,:,:,:,:sz]) )
+        votes = votes.gather(4, sort_id_h[:,:,:,:,sz:])
+        #route = route.gather(3, sort_id[:,:,:,self.max_sz:])
+
+        """
         if self.max_sz != 0:
             oper = route.max(dim=2)[0] # batch, input_dim, dim_x*dim_y
             sort_id = oper.sort(2, descending=True)[1] # batch, input_dim, dim_x*dim_y
@@ -584,6 +601,7 @@ class MaxRouteReduce(nn.Module):
             segment_list.append( votes.gather(4, sort_id_h[:,:,:,:,:self.sum_sz]) )
             votes = votes.gather(4, sort_id_h[:,:,:,:,self.sum_sz:])
             #route = route.gather(3, sort_id[:,:,:,self.sum_sz:])
+        """
 
         if self.rnd_sz != 0:
             idx_lucky = torch.randperm(votes.shape[4])[:self.rnd_sz]
