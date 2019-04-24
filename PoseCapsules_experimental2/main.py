@@ -48,7 +48,7 @@ if __name__ == '__main__':
     parser.add_argument('--disable_recon', action='store_true', help='Disable Reconstruction')
     parser.add_argument('--load_loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
     parser.add_argument('--pretrained',help='load pretrained epoch',type=int,nargs='?',const=-1,default=None,metavar='PERIOD')    
-    parser.add_argument('--recon_factor', type=float, default=5e-3, metavar='N', help='use reconstruction loss or not')
+    parser.add_argument('--recon_factor', type=float, default=2e-2, metavar='N', help='use reconstruction loss or not')
     parser.add_argument('--brightness', type=float, default=0, metavar='N', help='apply random brightness to images')
     parser.add_argument('--contrast', type=float, default=0, metavar='N', help='apply random contrast to images')
     parser.add_argument('--noise',help='Add noise value',type=float,default=.3,metavar='N')
