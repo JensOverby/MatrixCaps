@@ -52,7 +52,7 @@ class SparseCoding(nn.Module):
         """
 
         if self.not_initialized:
-            self.register_buffer('boosting_weights', torch.ones(x[1].shape[2]))
+            self.register_buffer('boosting_weights', torch.ones(x[1].shape[2], device=x[0].device))
     
         """ Calculate routing coefficients """
         # route: batch_size, input_dim, output_dim, dim_x, dim_y

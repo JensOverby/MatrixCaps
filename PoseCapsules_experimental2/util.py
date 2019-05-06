@@ -64,10 +64,11 @@ def matMinRep_from_qvec(q):
     return mat
 
 def matAffine_from_matMinRep(mat):
-    m = mat[:,:9].view(mat.shape[0], 3, 3)
+    mm = mat[:,:9].view(mat.shape[0], 3, 3)
+    mm = mm.permute(0,2,1)
     mat_list = []
-    for i in range(m.shape[0]):
-        m = torch.cat([m[i,:,:2], torch.zeros(3,1), m[i,:,2:]], 1)
+    for i in range(mm.shape[0]):
+        m = torch.cat([mm[i,:,:2], torch.zeros(3,1), mm[i,:,2:]], 1)
         z_axis = m[:,0].cross(m[:,1])
         m[:,2] = z_axis / z_axis.norm()
         m = torch.cat([m, torch.tensor([0.,0.,0.,mat[i,9]]).view(1,4)], 0)
@@ -116,6 +117,9 @@ class MyImageFolder(datasets.ImageFolder):
         data[-1] = data[-1].split('.p')[0]
         data = [float(i) for i in data]
 
+        if len(data) == 8:
+            data = matMinRep_from_qvec(torch.tensor(data).unsqueeze(0)).squeeze()
+            
         if self.data_rep==0:
             labels = torch.tensor(data)
         else:
@@ -481,3 +485,11 @@ def get_error(yhat, ygt):
         xyzErr = np.linalg.norm(yhat[:,xyz_idx:] - ygt[:,xyz_idx:], ord=1, axis=1)
         xyzErr = np.median(xyzErr)
         return medErr, xyzErr
+
+def hookFunc(module, gradInput, gradOutput):
+    #print(len(gradInput))
+    for v in gradInput:
+        print('Number of in NANs = ', (v != v).sum())
+        #print (v)
+    for v in gradOutput:
+        print('Number of out NANs = ', (v != v).sum())

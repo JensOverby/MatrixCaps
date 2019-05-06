@@ -20,7 +20,6 @@ import argparse
 from tqdm import tqdm
 import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
-from se3_geodesic_loss import SE3GeodesicLoss
 #from sklearn.datasets.lfw import _load_imgs
 from torch.autograd import detect_anomaly
 
@@ -31,40 +30,35 @@ np.random.seed(1991)
 torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
-import layers
-from layers import lambda_
+
 
 if __name__ == '__main__':
     torch.cuda.empty_cache()
     parser = argparse.ArgumentParser(description='CapsNet')
     parser.add_argument('--batch_size', type=int, default=100)
-    parser.add_argument('--batch_size2', type=int, default=0)
     parser.add_argument('--num_epochs', type=int, default=5000000)
     parser.add_argument('--lr',help='learning rate',type=float,nargs='?',const=0,default=None,metavar='PERIOD')    
-    parser.add_argument('--r', type=int, default=3)
     parser.add_argument('--disable_cuda', action='store_true', help='Disable CUDA')
     parser.add_argument('--normalize',help='Normalize rotation part of generated labels [0-2]',type=int,nargs='?',const=1,default=None,metavar='PERIOD')    
     parser.add_argument('--jit', action='store_true', help='Enable pytorch jit compilation')
-    parser.add_argument('--disable_recon', action='store_true', help='Disable Reconstruction')
     parser.add_argument('--load_loss',help='Load prev loss',type=int,nargs='?',const=1000,default=None,metavar='PERIOD')    
     parser.add_argument('--pretrained',help='load pretrained epoch',type=int,nargs='?',const=-1,default=None,metavar='PERIOD')    
-    parser.add_argument('--recon_factor', type=float, default=2e-2, metavar='N', help='use reconstruction loss or not')
+    parser.add_argument('--disable_recon', action='store_true', help='Disable Reconstruction')
+    parser.add_argument('--recon_factor', type=float, default=0.05, metavar='N', help='use reconstruction loss or not')
+    parser.add_argument('--ramp_recon', action='store_true', help='Ramp Reconstruction')
     parser.add_argument('--brightness', type=float, default=0, metavar='N', help='apply random brightness to images')
     parser.add_argument('--contrast', type=float, default=0, metavar='N', help='apply random contrast to images')
     parser.add_argument('--noise',help='Add noise value',type=float,default=.3,metavar='N')
     parser.add_argument('--num_workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=20, metavar='N', help='Scheduler patience')
     parser.add_argument('--dataset', type=str, default='images', metavar='N', help='dataset options: images,three_dot_3d')
-    parser.add_argument('--loss', type=str, default='MSE', metavar='N', help='loss options: MSE,GEO')
     args = parser.parse_args()
-    
     time_dump = int(time.time())
 
+    
     """
     Load training data
     """
-    #data_rep = 0 if args.loss == 'MSE' else 1
-    loss_weight = None
     if args.dataset == 'three_dot':
         train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
@@ -72,68 +66,39 @@ if __name__ == '__main__':
         train_dataset = util.myTest(width=50, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=50, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
     else:
-        train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
-        test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor(), data_rep=args.loss)
-        #loss_weight = 1
-    #else:
-    #    train_dataset = util.myTest(width=20, sz=5000, img_type=args.dataset) #, transform=transforms.Compose([transforms.ToTensor(),]))
-    #    test_dataset = util.myTest(width=20, sz=100, img_type=args.dataset, rnd=True) #, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+        train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
+        test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
-
     sup_iterator = train_loader.__iter__()
     test_iterator = test_loader.__iter__()
     _, imgs, labels = sup_iterator.next()
     sup_iterator = train_loader.__iter__()
 
-    #if loss_weight is not None:
-    #    loss_weight = torch.ones(labels.size(1))
-    #    loss_weight[6:9] *= 5
-    #else:
-    #    loss_weight = torch.ones(labels.size(1))
 
     """
     Setup model, load it to CUDA and make JIT compilation
     """
-    normalize = 0
-    if args.normalize:
-        normalize = args.normalize
     imgs = imgs[:2]
-    #labels = labels[:2]
-    lambda_max = 1.0
-    layers.lambda_ = lambda_max if args.pretrained else 1e-3
-    model = CapsNet(labels.shape[1], img_shape=imgs[0].shape, dataset=args.dataset, data_rep=args.loss, normalize=normalize)
-    model(imgs, args.disable_recon)
-
+    model = CapsNet(args.dataset)
+    model(imgs)
+    print("# model parameters:", sum(param.numel() for param in model.parameters()))
     if not args.disable_cuda and torch.cuda.is_available():
         model.cuda()
-        #labels = labels.cuda()
         imgs = imgs.cuda()
-
-
     if args.jit:
-        model = torch.jit.trace(model, (imgs, args.disable_recon), check_inputs=[(imgs, args.disable_recon)])
-
-
-    print("# parameters:", sum(param.numel() for param in model.parameters()))
+        model = torch.jit.trace(model, (imgs), check_inputs=[(imgs)])
 
 
     """
     Construct optimizer, scheduler, and loss functions
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-3, betas=(0.99, 0.999))
-    #optimizer = torch.optim.SGD(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.99)
-    #optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.99)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
-    
-    if args.loss == 'MSE':
-        caps_loss = MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
-        #caps_loss = MSELossWeighted(torch.ones(labels.size(1)).cuda())
-    else:
-        #caps_loss = geodesic_loss()
-        caps_loss = SE3GeodesicLoss.apply
+    caps_loss = nn.MSELoss(reduction='sum') #MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
     recon_loss = nn.MSELoss(reduction='sum')
+
 
     """
     Loading weights of previously saved states and optimizer state
@@ -143,12 +108,25 @@ if __name__ == '__main__':
 
 
     """
+    Potentially, setup ramp in of reconstruction model
+    """
+    ramp_recon_counter = 0
+    if args.ramp_recon:
+        ramp_recon_counter = 6
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = 1e-4
+
+    if model.recon_factor.item() == 0. or args.ramp_recon:
+        model.recon_factor = nn.Parameter(torch.tensor(args.recon_factor, device=model.recon_factor.device), requires_grad=False)
+        
+
+
+    """
     Logging of loss, reconstruction and ground truth
     """
     meter_loss = tnt.meter.AverageValueMeter()
     medErrAvg = tnt.meter.AverageValueMeter()
     xyzErrAvg = tnt.meter.AverageValueMeter()    
-    
     setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
     train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
     test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
@@ -157,24 +135,8 @@ if __name__ == '__main__':
         epoch_offset = util.load_loss(train_loss_logger, args.load_loss)
     ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env='PoseCapsules')
     reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env='PoseCapsules')
-    #setting_logger.log(str(args))
 
 
-
-    """
-    If starting from scratch, ramp learning rate
-    """
-    """
-    ramp = 0
-    if not args.pretrained:
-        ramp = 10
-        for param_group in optimizer.param_groups:
-            lr = param_group['lr']
-        new_lr = lr/100.
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lr
-        ramp_step = (lr-new_lr)/ramp
-    """
 
     steps = len(train_dataset) // args.batch_size
     steps_test = len(test_dataset) // args.batch_size
@@ -186,7 +148,7 @@ if __name__ == '__main__':
         Training Loop
         """
         model.train()
-        #model.capsules.bn1.training = False
+
         with tqdm(total=steps) as pbar:
             meter_loss.reset()
             medErrAvg.reset()
@@ -226,60 +188,44 @@ if __name__ == '__main__':
                 """
                 """
                 optimizer.zero_grad()
+                out_labels = model.capsules(imgs)
 
-                out_labels, recon = model(imgs, disable_recon=args.disable_recon)
-
-                #for param in model.image_decoder.parameters():
-                #    param.requires_grad = False
-                
 
                 """ LOSS CALCULATION """
-                loss = caps_loss(out_labels, labels)
+                loss = caps_loss(out_labels[:,0,0,0,:-1], labels)
+
 
                 if not args.disable_recon:
-                    if imgs.shape[1] > 1:
-                        """ greyscale """
-                        i_imgs = (0.2989*imgs.data[:,0,:,:] + 0.5870*imgs.data[:,1,:,:] + 0.1140*imgs.data[:,2,:,:]).unsqueeze(1)
-                    else:
-                        i_imgs = imgs
+                    #if imgs.shape[1] > 1:
+                    #    """ greyscale """
+                    #    i_imgs = (0.2989*imgs.data[:,0,:,:] + 0.5870*imgs.data[:,1,:,:] + 0.1140*imgs.data[:,2,:,:]).unsqueeze(1)
+                    #else:
+                    i_imgs = imgs
                     if i_imgs.shape[-1] > 100:
-                    #    new_shape = list(i_imgs.shape)
-                    #    new_shape[-2] = 100
-                    #    new_shape[-1] = 100
                         i_imgs = F.interpolate(i_imgs, size=100)
+                    recon = model.image_decoder(out_labels)
                     recon = recon.view_as(i_imgs)
                     add_loss = recon_loss(recon, i_imgs)
-                    loss += args.recon_factor * add_loss
-                    loss_recon += args.recon_factor*add_loss.data.cpu().item() / args.batch_size
+                    loss += model.recon_factor * add_loss
+                    loss_recon += model.recon_factor.item()*add_loss.data.cpu().item() / args.batch_size
 
-                #with self.assertRaisesRegex(RuntimeError, "Function 'MyFuncBackward' returned nan values in its 0th output."):
+
                 torch.autograd.set_detect_anomaly(True)
                 with detect_anomaly():
                     loss.backward()
                 
                 optimizer.step()
 
-                #for param in model.image_decoder.parameters():
-                #    param.requires_grad = True
                 
-                layers.lambda_ += 0.0001
-                if layers.lambda_ > lambda_max:
-                    layers.lambda_ = lambda_max
-                
-
-                loss /= args.batch_size
-
                 """
                 Logging
                 """
+                loss /= args.batch_size
                 meter_loss.add(loss.data.cpu().item())
-                #print(loss.item()-dae_loss.item(), dae_loss.item())
-                medErr, xyzErr = util.get_error(out_labels.data.cpu(), labels.data.cpu())
+                medErr, xyzErr = util.get_error(out_labels[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
                 medErrAvg.add(medErr)
                 xyzErrAvg.add(xyzErr)
                 if not args.disable_recon:
-                    #unsup_loss = capsloss(out_labels_unsup.view(labels_unsup.shape[0], -1)[:,:labels_unsup.shape[1]], labels_unsup)
-                    #meter_loss_unsup.add(unsup_loss.data)
                     pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
                 else:
                     pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
@@ -300,8 +246,7 @@ if __name__ == '__main__':
             test_loss = 0
             test_loss_recon = 0
             model.eval()
-            if args.loss=='MSE':
-                model.target_decoder.training = True
+            
             optimizer.zero_grad()
             torch.cuda.empty_cache()
             with torch.no_grad():
@@ -321,33 +266,28 @@ if __name__ == '__main__':
                         labels = labels.cuda()
     
         
-                    out_labels, recon = model(imgs, disable_recon=args.disable_recon)
+                    out_labels = model.capsules(imgs)
         
-        
-                    loss = caps_loss(out_labels, labels) / args.batch_size
+                    loss = caps_loss(out_labels[:,0,0,0,:-1], labels) / args.batch_size
                     test_loss += loss.data.cpu().item()
 
                     if not args.disable_recon:
-                        if imgs.shape[1] > 1:
-                            """ greyscale """
-                            i_imgs = (0.2989*imgs.data[:,0,:,:] + 0.5870*imgs.data[:,1,:,:] + 0.1140*imgs.data[:,2,:,:]).unsqueeze(1)
-                        else:
-                            i_imgs = imgs
+                        #if imgs.shape[1] > 1:
+                        #    """ greyscale """
+                        #    i_imgs = (0.2989*imgs.data[:,0,:,:] + 0.5870*imgs.data[:,1,:,:] + 0.1140*imgs.data[:,2,:,:]).unsqueeze(1)
+                        #else:
+                        i_imgs = imgs
                         if i_imgs.shape[-1] > 100:
-                        #    new_shape = list(i_imgs.shape)
-                        #    new_shape[-2] = 100
-                        #    new_shape[-1] = 100
                             i_imgs = F.interpolate(i_imgs, size=100)
+                        recon = model.image_decoder(out_labels)
                         recon = recon.view_as(i_imgs)
                         
-                        add_loss = args.recon_factor * recon_loss(recon, i_imgs) / args.batch_size
+                        add_loss = model.recon_factor.item() * recon_loss(recon, i_imgs) / args.batch_size
                         loss += add_loss
                         test_loss_recon += add_loss.data.cpu().item()
                 
-            #torch.enable_grad()
             test_loss /= steps_test
             test_loss_recon /= steps_test
-            print("Test loss: , Test loss recon: {}".format(test_loss_recon)) #(test_loss, test_loss_recon))
             
 
 
@@ -359,14 +299,6 @@ if __name__ == '__main__':
             train_loss_logger.log(epoch + epoch_offset, loss-loss_recon, name='loss')
             test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
 
-            """
-            loss_relation = loss_recon/(loss-loss_recon)
-            if loss_relaparam_group['lr'] = tion > 0.25 and epoch>15:
-                fac = 0.25/loss_relation
-                print("Loss relation = {}. Recon-factor reduced from {} to {}".format(loss_relation, args.recon_factor, args.recon_factor*fac))
-                args.recon_factor *= fac
-            """
-
             if not args.disable_recon:
                 train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
                 test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
@@ -374,7 +306,6 @@ if __name__ == '__main__':
             with open("loss.log", "a") as myfile:
                 myfile.write(str(loss) + '\n')
 
-            #print("Epoch{} Train loss:{:4} target: {:4}, {:4}, {:4}, {:4}".format(epoch, loss, out_labels[0,0], out_labels[0,1], out_labels[0,2], out_labels[0,3]))
 
 
             """
@@ -382,21 +313,24 @@ if __name__ == '__main__':
             """
             scheduler.step(loss)
             
+            if not args.disable_recon and ramp_recon_counter==0:
+                pose_loss = loss-loss_recon
+                diff_factor = pose_loss / loss_recon
+                model.recon_factor -= 0.1*model.recon_factor*(1-diff_factor)
             
-            #if epoch==3:
-            #    for param_group in optimizer.param_groups:
-            #        param_group['lr'] = param_group['lr'] * 10.
-                    
-                
-            """
-            if ramp > 0:
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = param_group['lr'] + ramp_step
-                ramp -= 1
-            """
+            
+            if ramp_recon_counter > 0:
+                ramp_recon_counter -= 1
+                if ramp_recon_counter == 1:
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = 0.5*args.lr
+                elif ramp_recon_counter == 0:
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = args.lr
+
 
             time_now = int(time.time())
-            if (time_now-time_dump) > 60*5: # dump every 15 minutes
+            if (time_now-time_dump) > 60*15: # dump every 15 minutes
                 time_dump = time_now
                 """
                 Save model and optimizer states
@@ -406,14 +340,3 @@ if __name__ == '__main__':
                 if not args.disable_cuda:
                     model.cuda()
                 torch.save(optimizer.state_dict(), "./weights/optim.pth")
-                
-                """
-                kaj = model.state_dict()
-                kaj.keys()
-                kaj.pop('capsules.bn1.weight')
-                kaj.pop('capsules.bn1.bias')
-                kaj.pop('capsules.bn1.running_mean')
-                kaj.pop('capsules.bn1.running_var')
-                kaj.pop('capsules.bn1.num_batches_tracked')
-                torch.save(kaj, "./weights/model_kaj.pth")
-                """

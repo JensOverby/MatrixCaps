@@ -10,13 +10,17 @@ votes_t_shape = [3, 0, 1, 2, 4, 5]
 r_t_shape = [1, 2, 3, 0, 4, 5]
 eps = 1e-10
 ln_2pi = math.log(2*math.pi)
-lambda_ = 0.0001
+#lambda_ = 0.0001
 
 def calc_out(input_, kernel=1, stride=1, padding=0, dilation=1):
     return int((input_ + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
 
-def calc_same_padding(i, k=1, s=1, d=1, transposed=False):
-    return int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
+def calc_padding(i, k=1, s=1, d=1):
+    pad = int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
+    if (k%2) == 0:
+        return (pad+1, pad, pad+1, pad)
+    return (pad, pad, pad, pad)
+    #return int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
 """
     o = (i + 2*p - k - (k-1)*(d-1)) / s + 1
     s*o = (i + 2*p - k - (k-1)*(d-1)) + s
@@ -69,6 +73,12 @@ class MatrixToOut(nn.Module):
         self.output_dim = output_dim
     def forward(self, x):
         return x[...,:self.output_dim] #, None, None
+
+class MatrixToConv(nn.Module):
+    def __init__(self):
+        super(MatrixToConv, self).__init__()
+    def forward(self, x):
+        return x.permute(0,1,4,2,3).contiguous().view(x.shape[0], -1, x.shape[2], x.shape[3])
 
 class SinusEncoderLayer(nn.Module):
     """
@@ -135,6 +145,7 @@ class PosEncoderLayer(nn.Module):
             self.m = self.m + self.m.transpose(1,0)
             self.m = self.m - self.m.min()
             self.m = self.m / self.m.max()
+            self.m = self.m[:x.shape[-2], :]
 
         if x.device != self.m.device:
             self.m = self.m.cuda(x.device)
@@ -175,7 +186,7 @@ class ConvVector2d(nn.Module):
             """ If previous was Conv2d """
             x = x.unsqueeze(1)
             shp = x.shape
-        elif (shp[-1] == self.h) and (shp[2] == shp[3]): # b, C, w, w, hh
+        elif (shp[-1] == self.h) and (shp[2] == shp[3]): # b, C, w, w, h
             """ If previous was MatrixRouting """
             x = x.permute(0,1,4,2,3)
             shp = x.shape
@@ -190,7 +201,7 @@ class ConvVector2d(nn.Module):
 
 
 class PrimMatrix2d(nn.Module):
-    def __init__(self, output_dim, h, kernel_size, stride, padding, bias, activate=False, advanced=False):
+    def __init__(self, output_dim, h, kernel_size, stride, padding, bias, advanced=False, func='Conv2d'):
         super(PrimMatrix2d, self).__init__()
         self.output_dim = output_dim
         self.h = h
@@ -198,53 +209,61 @@ class PrimMatrix2d(nn.Module):
         self.stride = stride
         self.padding = padding
         self.bias = bias
-        self.activate = activate
         self.advanced = advanced
         self.not_initialized = True
+        self.func = func
         
     def init(self, x): # batch_size, input_dim, input_atoms, dim_x, dim_y
         in_channels = 1 #int(x.size(2)/(self.h+1))
-        self.in_h = x.shape[2] - 1
+        in_h = x.shape[2] - 1
+        ConvFunc = getattr(nn,self.func)
+        
+        if self.kernel_size == 0:
+            self.kernel_size = x.shape[-1]
 
         if self.advanced:
-            y = x.view(x.shape[0]*x.shape[1], x.shape[2], x.shape[3], x.shape[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
-            same_padding = calc_same_padding(y.shape[-1], self.kernel_size, 1)
-            self.conv_pre = nn.Conv2d(in_channels=in_channels*self.in_h,
-                                           out_channels=in_channels*self.in_h,
+            #y = x.view(x.shape[0]*x.shape[1], x.shape[2], x.shape[3], x.shape[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
+            same_padding = calc_padding(x.shape[-1], self.kernel_size, 1)
+            self.pad_pre = nn.ConstantPad2d(same_padding, 0.)
+            self.conv_pre = nn.Conv2d(in_channels=in_channels*in_h,
+                                           out_channels=in_channels*in_h,
                                            kernel_size=self.kernel_size,
                                            stride=1,
-                                           padding=same_padding,
+                                           padding=0,
                                            bias=self.bias)
+            if x.is_cuda:
+                self.conv_pre.cuda()
             nn.init.normal_(self.conv_pre.weight.data, mean=0,std=0.1)
             if self.bias:
                 nn.init.normal_(self.conv_pre.bias.data, mean=0,std=0.1)
             in_channels *= 2
         
-        self.conv = nn.Conv2d(in_channels=in_channels*self.in_h,
+        self.conv = ConvFunc(in_channels=in_channels*in_h,
                                        out_channels=self.output_dim * self.h,
                                        kernel_size=self.kernel_size,
                                        stride=self.stride,
                                        padding=self.padding,
                                        bias=self.bias)
+        if x.is_cuda:
+            self.conv.cuda()
         nn.init.normal_(self.conv.weight.data, mean=0,std=0.1)
 
         if self.bias:
             nn.init.normal_(self.conv.bias.data, mean=0,std=0.1)
-        if self.activate:
-            self.conv_a = nn.Conv2d(in_channels=in_channels,
-                                           out_channels=self.output_dim,
-                                           kernel_size=self.kernel_size,
-                                           stride=self.stride,
-                                           padding=self.padding,
-                                           bias=self.bias)
-            nn.init.normal_(self.conv_a.weight.data, mean=0,std=0.1)
-            if self.bias:
-                nn.init.normal_(self.conv_a.bias.data, mean=0,std=0.1)
-        else:
-            self.pool = nn.AvgPool2d(self.kernel_size, stride=self.stride, padding=self.padding)
-        
-        self.not_initialized = False
 
+        self.conv_a = ConvFunc(in_channels=1,
+                                       out_channels=1,
+                                       kernel_size=self.kernel_size,
+                                       stride=self.stride,
+                                       padding=self.padding,
+                                       bias=self.bias)
+        if x.is_cuda:
+            self.conv_a.cuda()
+        nn.init.normal_(self.conv_a.weight.data, mean=0,std=0.1)
+        if self.bias:
+            nn.init.normal_(self.conv_a.bias.data, mean=0,std=0.1)
+            
+        self.not_initialized = False
 
     def forward(self, x):
         """ x: batch_size, input_dim, input_atoms, dim_x, dim_y """
@@ -267,26 +286,23 @@ class PrimMatrix2d(nn.Module):
             x = x.view(shp)
         if self.not_initialized:
             self.init(x)
+        in_h = shp[2] - 1
         
         x = x.view(shp[0]*shp[1], shp[2], shp[3], shp[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
 
         if self.advanced:
-            votes = self.conv_pre(x[:,:self.in_h,:,:])
+            votes = self.pad_pre(x[:,:in_h,:,:])
+            votes = self.conv_pre(votes)
             votes = F.relu(votes, inplace=True)
-            votes = torch.cat([x[:,:self.in_h,:,:], votes], dim=1)
-            votes = self.conv(votes)
+            votes = torch.cat([x[:,:in_h,:,:], votes], dim=1)
+            votes = self.conv(votes)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         else:
-            votes = self.conv(x[:,:self.in_h,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
-
+            votes = self.conv(x[:,:in_h,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         votes = votes.view(shp[0], -1, self.output_dim, self.h, votes.size(-2), votes.size(-1))
 
-        if self.activate:
-            activations = self.conv_a(x[:,self.in_h:,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
-            activations = torch.sigmoid(activations)
-            activations = activations.view(shp[0], -1, self.output_dim, 1, votes.size(-2), votes.size(-1))
-        else:
-            activations = self.pool(x[:,self.in_h:,:,:])
-            activations = activations.view(shp[0], -1, 1, 1, activations.size(-2), activations.size(-1)).repeat(1,1,self.output_dim,1,1,1)
+        activations = self.conv_a(x[:,in_h:,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+        #activations = torch.sigmoid(activations)
+        activations = activations.view(shp[0], -1, 1, 1, activations.size(-2), activations.size(-1)).repeat(1,1,self.output_dim,1,1,1)
 
         x = torch.cat([votes, activations], dim=3)
         return x
@@ -462,7 +478,7 @@ class MatrixRouting(nn.Module):
         self.beta_v = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1,1))
         self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
         
-    def forward(self, votes): # (b, Bkk, Cww, hh)
+    def forward(self, votes): # (b, Bkk, Cww, h)
         if type(votes) is tuple:
             """ the votes are pooled/reduced, so bias should be detached? """
             votes = votes[0]
@@ -478,10 +494,10 @@ class MatrixRouting(nn.Module):
             w_x = w_y = int(math.sqrt(shp[2] / self.output_dim))
             v = votes
 
-        b, Bkk, Cww, hh = shp
+        b, Bkk, Cww, h = shp
         
-        V = v[...,:hh-1]
-        a_ = v[...,hh-1:].squeeze(-1)
+        V = v[...,:h-1]
+        a_ = v[...,h-1:].squeeze(-1)
 
         # routing coefficient
         if V.is_cuda:
@@ -490,6 +506,8 @@ class MatrixRouting(nn.Module):
             R = Variable(torch.ones(shp[:3]), requires_grad=False) / self.output_dim
 
         for i in range(self.num_routing):
+            lambda_ = 0.01 * (1 - 0.95 ** (i+1))
+            
             """ M-step: Compute an updated Gaussian model (μ, σ) """
             R = (R * a_).unsqueeze(-1)
             sum_R = R.sum(1) + 0.0001
@@ -506,7 +524,7 @@ class MatrixRouting(nn.Module):
             Votes are routed by the learned weight self.W.
             """
             log_sigma = torch.log(sigma_square.sqrt()+eps)
-            cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,hh-1)) * sum_R.view(b, self.output_dim,-1,1)
+            cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h-1)) * sum_R.view(b, self.output_dim,-1,1)
             a = torch.sigmoid(lambda_ * (self.beta_a - cost.sum(-1)))
             a = a.view(b, Cww)
 
@@ -520,7 +538,7 @@ class MatrixRouting(nn.Module):
                 ap = a[:,None,:] * p_j_h.sum(-1)
                 R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + eps) + eps, requires_grad=False) # detaches from graph
 
-        mu_a = torch.cat([mu.view(b, self.output_dim, w_x, w_y, -1), a.view(b, self.output_dim, w_x, w_y, 1)], dim=-1) # b, C, w, w, hh
+        mu_a = torch.cat([mu.view(b, self.output_dim, w_x, w_y, -1), a.view(b, self.output_dim, w_x, w_y, 1)], dim=-1) # b, C, w, w, h
 
         return mu_a #, R.view(b, Bkk, self.output_dim, w_x, w_y), votes
 

@@ -18,21 +18,27 @@ class StoreLayer(nn.Module):
         self.do_clone = do_clone
         
     def forward(self, x):
+        if type(x) is tuple:
+            x = x[0]
         if self.do_clone:
-            if type(x) is tuple:
-                x_clone = x[0].clone()
-                self.container[0] = (x_clone,) + x[1:]
-            else:
-                self.container[0] = x.clone()
+            self.container[0] = x.clone()
         else:
             self.container[0] = x
-        
         shp = x.shape
         if len(shp) == 4:
             """ If previous was Conv2d """
             self.container[0] = self.container[0].permute(0,2,3,1).unsqueeze(1)
-            
         return x
+
+class SplitStereoReturnLeftLayer(nn.Module):
+    def __init__(self, right_container):
+        super(SplitStereoReturnLeftLayer, self).__init__()
+        right_container.append(None)
+        self.right_container = right_container
+
+    def forward(self, x):
+        self.right_container[0] = x[:,:,:,int(x.shape[-1]/2):]
+        return x[:,:,:,:int(x.shape[-1]/2)]
 
 class RandomizeLayer(nn.Module):
     def __init__(self):
@@ -54,11 +60,10 @@ class RandomizeLayer(nn.Module):
         return x, x_orig[1], x_orig[2], x_orig[3]
 
 class ConcatLayer(nn.Module):
-    def __init__(self, container, do_clone=True, include_routes=False, keep_original=False):
+    def __init__(self, container, do_clone=True, keep_original=False):
         super(ConcatLayer, self).__init__()
         self.container = container
         self.do_clone = do_clone
-        self.include_routes = include_routes
         self.keep_original = keep_original
         
     def forward(self, x):
@@ -117,11 +122,23 @@ class BNLayer(nn.Module):
         yy = x[:,:,:,shp[3]-1:,:,:]
         if self.not_initialized:
             self.batchnorm = nn.BatchNorm2d(num_features=xx.shape[1])
+            if x.is_cuda:
+                self.batchnorm.cuda()
             self.not_initialized = False
         xx = self.batchnorm(xx).view(shp[0], shp[1], shp[2], shp[3]-1, shp[4], shp[5])
         xx = torch.tanh(xx)
+        yy = torch.sigmoid(yy)
         x = torch.cat([xx,yy], dim=3)
         return x
+
+class Pose2VectorRepLayer(nn.Module):
+    def __init__(self):
+        super(Pose2VectorRepLayer, self).__init__()
+
+    def forward(self, x):
+        activation = torch.ones(x.shape[0], device=x.device)
+        x = torch.cat([x,activation.unsqueeze(-1)], dim=1)
+        return x.view(x.shape[0], 1, 1, 1, -1)
 
 class UpsampleLayer(nn.Module):
     def __init__(self, new_h, pos_embed=False):
