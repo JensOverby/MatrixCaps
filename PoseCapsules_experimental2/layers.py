@@ -304,7 +304,7 @@ class PrimMatrix2d(nn.Module):
         #activations = torch.sigmoid(activations)
         activations = activations.view(shp[0], -1, 1, 1, activations.size(-2), activations.size(-1)).repeat(1,1,self.output_dim,1,1,1)
 
-        x = torch.cat([votes, activations], dim=3)
+        x = torch.cat([votes, activations], dim=3) # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
         return x
 
 
@@ -319,6 +319,8 @@ class ConvMatrix2d(nn.Module):
         self.not_initialized = True
 
     def init(self, x): # batch, input_dim, input_atoms, dim_x, dim_y       (self.b, self.C, self.w, self.w, hh)
+        if self.kernel_size == 0:
+            self.kernel_size = x.shape[-2]
         self.weight = nn.Parameter(torch.randn(x.shape[1], self.kernel_size, self.kernel_size, self.output_dim, self.h, self.h))  # B,K,K,C,4,4
         self.not_initialized = False
 

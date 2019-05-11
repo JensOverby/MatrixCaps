@@ -10,6 +10,19 @@ from torch.autograd import Variable
 import math
 
 
+class MaskLayer(nn.Module):
+    def __init__(self, num_classes):
+        super(MaskLayer, self).__init__()
+        self.num_classes = num_classes
+
+    def forward(self, x):
+        x = x.squeeze()
+        _, y = x[:,:,-1:].max(dim=1)
+        y = y.squeeze()
+        y = Variable(torch.eye(self.num_classes, device=x.device)).index_select(dim=0, index=y) # convert to one hot
+        return (x[:,:,:-1] * y[:, :, None]).view(x.size(0), -1)
+
+
 class StoreLayer(nn.Module):
     def __init__(self, container, do_clone=True):
         super(StoreLayer, self).__init__()
@@ -127,6 +140,19 @@ class BNLayer(nn.Module):
             self.not_initialized = False
         xx = self.batchnorm(xx).view(shp[0], shp[1], shp[2], shp[3]-1, shp[4], shp[5])
         xx = torch.tanh(xx)
+        yy = torch.sigmoid(yy)
+        x = torch.cat([xx,yy], dim=3)
+        return x
+
+class SigmoidLayer(nn.Module):
+    def __init__(self, begin=-1):
+        super(SigmoidLayer, self).__init__()
+        self.begin = begin
+
+    def forward(self, x): # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
+        shp = x.shape
+        xx = x[:,:,:,:self.begin,:,:]
+        yy = x[:,:,:,self.begin:,:,:]
         yy = torch.sigmoid(yy)
         x = torch.cat([xx,yy], dim=3)
         return x

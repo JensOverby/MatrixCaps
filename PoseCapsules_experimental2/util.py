@@ -132,7 +132,7 @@ class MyImageFolder(datasets.ImageFolder):
         
         #labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
         
-        return index, sample, labels
+        return sample, labels
 
 #labels[:,None,3:7].shape
 #labels[(labels[:,6] < 0).nonzero(),3:7].shape

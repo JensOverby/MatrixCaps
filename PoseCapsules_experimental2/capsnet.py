@@ -83,7 +83,7 @@ class CapsNet(nn.Module):
             layer_list['split_stereo'] = layers2.SplitStereoReturnLeftLayer(right_container)
             
             layer_list['posenc'] = layers.PosEncoderLayer()
-            layer_list['conv1'] = nn.Conv2d(in_channels=img_shape[0]+1, out_channels=10, kernel_size=15, stride=1, padding=7, bias=False)
+            layer_list['conv1'] = nn.Conv2d(in_channels=3+1, out_channels=10, kernel_size=15, stride=1, padding=7, bias=False)
             nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
             #nn.init.normal_(layer_list['conv1'].bias.data, mean=0,std=0.1)
             layer_list['bn1'] = nn.BatchNorm2d(num_features=10, eps=0.001, momentum=0.1, affine=True)
@@ -179,6 +179,81 @@ class CapsNet(nn.Module):
 
             self.image_decoder = nn.Sequential(decoder_list)
 
+        elif dataset == 'MNIST':
+
+            A, B, C, D, E, h = 32, 32, 32, 32, 10, 16
+            
+            layer_list = OrderedDict()
+            layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=2, out_channels=A, kernel_size=5, stride=2, padding=0, bias=False)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            #nn.init.normal_(layer_list['conv1'].bias.data, mean=0,std=0.1)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=A, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+    
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=B, h=16, kernel_size=1, stride=1, padding=0, bias=True, advanced=False)
+            layer_list['bnn1'] = layers2.BNLayer()
+            layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1)
+    
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=C, h=16, kernel_size=3, stride=2, padding=0, bias=False, advanced=True)
+            layer_list['bnn2'] = layers2.BNLayer()
+            layer_list['route2'] = layers.MatrixRouting(output_dim=C, num_routing=3)
+    
+            layer_list['prim2a'] = layers.PrimMatrix2d(output_dim=D, h=16, kernel_size=3, stride=1, padding=0, bias=False, advanced=True)
+            layer_list['bnn2a'] = layers2.BNLayer()
+            layer_list['route2a'] = layers.MatrixRouting(output_dim=D, num_routing=3)
+    
+            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=E, h=16, kernel_size=0, stride=1, padding=0, bias=False, advanced=True)
+            layer_list['bnn3'] = layers2.BNLayer()
+            layer_list['route3'] = layers.MatrixRouting(output_dim=E, num_routing=3)
+
+            self.capsules = nn.Sequential(layer_list)
+
+            self.image_decoder = nn.Sequential(
+                layers2.MaskLayer(E),
+                nn.Linear(h * E, 512),
+                nn.ReLU(inplace=True),
+                nn.Linear(512, 1024),
+                nn.ReLU(inplace=True),
+                nn.Linear(1024, 784),
+                nn.Sigmoid()
+            )
+
+        elif dataset == 'MNIST_ORIGINAL':
+
+            A, B, C, D, E, h = 32, 32, 32, 32, 10, 4
+            
+            layer_list = OrderedDict()
+            layer_list['conv1'] = nn.Conv2d(in_channels=1, out_channels=A, kernel_size=5, stride=2, padding=0, bias=True)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+    
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=B, h=16, kernel_size=1, stride=1, padding=0, bias=True, advanced=False)
+            layer_list['sigmoid1'] = layers2.SigmoidLayer()
+            layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1)
+    
+    
+            layer_list['caps2'] = layers.ConvMatrix2d(output_dim=C, hh=16, kernel_size=3, stride=2)
+            layer_list['route2'] = layers.MatrixRouting(output_dim=C, num_routing=3)
+
+            layer_list['caps3'] = layers.ConvMatrix2d(output_dim=D, hh=16, kernel_size=3, stride=1)
+            layer_list['route3'] = layers.MatrixRouting(output_dim=C, num_routing=3)
+
+            layer_list['caps4'] = layers.ConvMatrix2d(output_dim=E, hh=16, kernel_size=0, stride=1)
+            layer_list['route4'] = layers.MatrixRouting(output_dim=E, num_routing=3)
+
+            self.capsules = nn.Sequential(layer_list)
+
+            self.image_decoder = nn.Sequential(
+                layers2.MaskLayer(E),
+                nn.Linear(h*h * E, 512),
+                nn.ReLU(inplace=True),
+                nn.Linear(512, 1024),
+                nn.ReLU(inplace=True),
+                nn.Linear(1024, 784),
+                nn.Sigmoid()
+            )
+            
     def forward(self, x, disable_recon=False):
         p = self.capsules(x)
         if not disable_recon:

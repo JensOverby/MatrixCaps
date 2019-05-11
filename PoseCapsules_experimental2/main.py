@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import transforms
 from torchvision.utils import make_grid
+from torchvision import datasets
 import numpy as np
 import random
 import time
@@ -30,6 +31,35 @@ np.random.seed(1991)
 torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
+
+class CapsuleLoss(nn.Module):
+    def __init__(self, args, steps):
+        super(CapsuleLoss, self).__init__()
+        if args.dataset[:5] == 'MNIST':
+            self.begin = -1
+            self.end = None
+            self.loss = getattr(self, 'spread_loss')
+            self.step = (args.batch_size/16.) * 2e-1 / steps
+            self.step *= args.mstep
+            if args.pretrained:
+                self.m = 0.9
+            else:
+                self.m = 0.2
+        else:
+            self.loss = nn.MSELoss(reduction='sum')
+            self.begin = None
+            self.end = -1
+        
+    def spread_loss(self, x, target):
+        loss = F.multi_margin_loss(x, target, p=2, margin=self.m)
+        if self.m < 0.9:
+            self.m += self.step
+        return loss
+    
+    def forward(self, output, labels):
+        x = output.view(output.shape[0], -1, output.shape[-1])[:,:,self.begin:self.end].squeeze()
+        return self.loss(x, labels)
+        #main_loss = getattr(self, self.loss)(output, labels, m)
 
 
 if __name__ == '__main__':
@@ -52,6 +82,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=20, metavar='N', help='Scheduler patience')
     parser.add_argument('--dataset', type=str, default='images', metavar='N', help='dataset options: images,three_dot_3d')
+    parser.add_argument('--mstep', type=float, default=1, metavar='N', help='step rate of m in spreadloss')
     args = parser.parse_args()
     time_dump = int(time.time())
 
@@ -65,15 +96,18 @@ if __name__ == '__main__':
     elif args.dataset == 'three_dot_3d':
         train_dataset = util.myTest(width=50, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=50, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+    elif args.dataset[:5] == 'MNIST':
+        train_dataset = datasets.MNIST(root='../../data/', train=True, transform=transforms.ToTensor(), download=True)
+        test_dataset = datasets.MNIST(root='../../data/', train=False, transform=transforms.ToTensor())
     else:
         train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
         test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
 
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=1, shuffle=True, drop_last=False)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=False)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True, drop_last=False)
     sup_iterator = train_loader.__iter__()
     test_iterator = test_loader.__iter__()
-    _, imgs, labels = sup_iterator.next()
+    imgs, labels = sup_iterator.next()
     sup_iterator = train_loader.__iter__()
 
 
@@ -96,7 +130,7 @@ if __name__ == '__main__':
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-3, betas=(0.99, 0.999))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
-    caps_loss = nn.MSELoss(reduction='sum') #MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
+    caps_loss = CapsuleLoss(args, len(train_dataset)) #nn.MSELoss(reduction='sum') #MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
     recon_loss = nn.MSELoss(reduction='sum')
 
 
@@ -125,6 +159,7 @@ if __name__ == '__main__':
     Logging of loss, reconstruction and ground truth
     """
     meter_loss = tnt.meter.AverageValueMeter()
+    meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
     medErrAvg = tnt.meter.AverageValueMeter()
     xyzErrAvg = tnt.meter.AverageValueMeter()    
     setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
@@ -151,6 +186,7 @@ if __name__ == '__main__':
 
         with tqdm(total=steps) as pbar:
             meter_loss.reset()
+            meter_accuracy.reset()
             medErrAvg.reset()
             xyzErrAvg.reset()
 
@@ -163,7 +199,7 @@ if __name__ == '__main__':
                     sup_iterator = train_loader.__iter__()
                     data = sup_iterator.next()
 
-                _,imgs, labels = data
+                imgs, labels = data
 
                 """
                 Transform images and labels
@@ -192,7 +228,7 @@ if __name__ == '__main__':
 
 
                 """ LOSS CALCULATION """
-                loss = caps_loss(out_labels[:,0,0,0,:-1], labels)
+                loss = caps_loss(out_labels, labels)
 
 
                 if not args.disable_recon:
@@ -222,13 +258,19 @@ if __name__ == '__main__':
                 """
                 loss /= args.batch_size
                 meter_loss.add(loss.data.cpu().item())
-                medErr, xyzErr = util.get_error(out_labels[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
-                medErrAvg.add(medErr)
-                xyzErrAvg.add(xyzErr)
-                if not args.disable_recon:
-                    pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
+                
+                if args.dataset[:5] == 'MNIST':
+                    meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
+                    pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
                 else:
-                    pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
+                    medErr, xyzErr = util.get_error(out_labels[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
+                    medErrAvg.add(medErr)
+                    xyzErrAvg.add(xyzErr)
+                    if not args.disable_recon:
+                        pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
+                    else:
+                        pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
+                
                 pbar.update()
 
 
@@ -238,6 +280,19 @@ if __name__ == '__main__':
                 reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
 
 
+
+            time_now = int(time.time())
+            if (time_now-time_dump) > 60*15: # dump every 15 minutes
+                time_dump = time_now
+                """
+                Save model and optimizer states
+                """
+                model.cpu()
+                torch.save(model.state_dict(), "./weights/model_{}.pth".format(epoch))
+                if not args.disable_cuda:
+                    model.cuda()
+                torch.save(optimizer.state_dict(), "./weights/optim.pth")
+
                 
             """
             Test Loop
@@ -246,6 +301,8 @@ if __name__ == '__main__':
             test_loss = 0
             test_loss_recon = 0
             model.eval()
+            meter_accuracy.reset()
+            print("Testing...")
             
             optimizer.zero_grad()
             torch.cuda.empty_cache()
@@ -257,7 +314,7 @@ if __name__ == '__main__':
                         test_iterator = test_loader.__iter__()
                         data = test_iterator.next()
         
-                    _,imgs, labels = data
+                    imgs, labels = data
                     
                     imgs = Variable(imgs)
                     #labels = util.matMinRep_from_qvec(labels)
@@ -268,7 +325,7 @@ if __name__ == '__main__':
         
                     out_labels = model.capsules(imgs)
         
-                    loss = caps_loss(out_labels[:,0,0,0,:-1], labels) / args.batch_size
+                    loss = caps_loss(out_labels, labels) / args.batch_size
                     test_loss += loss.data.cpu().item()
 
                     if not args.disable_recon:
@@ -286,10 +343,13 @@ if __name__ == '__main__':
                         loss += add_loss
                         test_loss_recon += add_loss.data.cpu().item()
                 
+                    if args.dataset[:5] == 'MNIST':
+                        meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
+
             test_loss /= steps_test
             test_loss_recon /= steps_test
             
-
+            print ("Test accuracy: ", meter_accuracy.value()[0])
 
             """
             All train data processed: Do logging
@@ -315,8 +375,11 @@ if __name__ == '__main__':
             
             if not args.disable_recon and ramp_recon_counter==0:
                 pose_loss = loss-loss_recon
-                diff_factor = pose_loss / loss_recon
-                model.recon_factor -= 0.1*model.recon_factor*(1-diff_factor)
+                diff_factor = pose_loss / (loss_recon*4)
+                if diff_factor > 1:
+                    model.recon_factor += 0.2*model.recon_factor*(1-1/diff_factor)
+                else:
+                    model.recon_factor -= 0.2*model.recon_factor*(1-diff_factor)
             
             
             if ramp_recon_counter > 0:
@@ -327,16 +390,3 @@ if __name__ == '__main__':
                 elif ramp_recon_counter == 0:
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = args.lr
-
-
-            time_now = int(time.time())
-            if (time_now-time_dump) > 60*15: # dump every 15 minutes
-                time_dump = time_now
-                """
-                Save model and optimizer states
-                """
-                model.cpu()
-                torch.save(model.state_dict(), "./weights/model_{}.pth".format(epoch))
-                if not args.disable_cuda:
-                    model.cuda()
-                torch.save(optimizer.state_dict(), "./weights/optim.pth")
