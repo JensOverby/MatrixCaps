@@ -182,6 +182,7 @@ class CapsNet(nn.Module):
         elif dataset == 'MNIST':
 
             A, B, C, D, E, h = 32, 32, 32, 32, 10, 16
+            img_size = 784
             
             layer_list = OrderedDict()
             layer_list['posenc'] = layers.PosEncoderLayer()
@@ -215,7 +216,7 @@ class CapsNet(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(512, 1024),
                 nn.ReLU(inplace=True),
-                nn.Linear(1024, 784),
+                nn.Linear(1024, img_size),
                 nn.Sigmoid()
             )
 
@@ -253,6 +254,49 @@ class CapsNet(nn.Module):
                 nn.Linear(1024, 784),
                 nn.Sigmoid()
             )
+            
+        elif dataset == 'smallNORB':
+
+            A, B, C, D, E, h = 17, 16, 32, 32, 5, 16
+            img_size = 32*32
+
+            layer_list = OrderedDict()
+            layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=1+1, out_channels=A, kernel_size=9, stride=1, padding=2, bias=False)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=A, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=B, h=h, kernel_size=9, stride=2, padding=2, bias=True)
+            layer_list['bnn1'] = layers2.BNLayer()
+            layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1)
+
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=C, h=h, kernel_size=7, stride=2, padding=1, bias=False, advanced=True)
+            layer_list['bnn2'] = layers2.BNLayer()
+            layer_list['route2'] = layers.MatrixRouting(output_dim=C, num_routing=3)
+
+            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=D, h=h, kernel_size=5, stride=2, padding=1, bias=False, advanced=True)
+            layer_list['bnn3'] = layers2.BNLayer()
+            layer_list['route3'] = layers.MatrixRouting(output_dim=D, num_routing=3)
+
+            #self.decoder_input_atoms = 16
+            layer_list['prim4'] = layers.PrimMatrix2d(output_dim=E, h=h, kernel_size=0, stride=1, padding=0, bias=False, advanced=True)
+            layer_list['bnn4'] = layers2.BNLayer()
+            layer_list['route4'] = layers.MatrixRouting(output_dim=E, num_routing=3)
+            self.capsules = nn.Sequential(layer_list)
+
+            self.capsules = nn.Sequential(layer_list)
+
+            self.image_decoder = nn.Sequential(
+                layers2.MaskLayer(E),
+                nn.Linear(h * E, 512),
+                nn.ReLU(inplace=True),
+                nn.Linear(512, 1024),
+                nn.ReLU(inplace=True),
+                nn.Linear(1024, img_size),
+                nn.Sigmoid()
+            )
+            
             
     def forward(self, x, disable_recon=False):
         p = self.capsules(x)

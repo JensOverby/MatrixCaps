@@ -4,7 +4,7 @@ Created on Jan 14, 2019
 @author: jens
 '''
 
-from capsnet import MSELossWeighted, CapsNet
+from capsnet import CapsNet #, MSELossWeighted
 import util
 
 import torch
@@ -23,6 +23,7 @@ import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
 #from sklearn.datasets.lfw import _load_imgs
 from torch.autograd import detect_anomaly
+from datasets import smallNORB
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
@@ -39,8 +40,17 @@ class CapsuleLoss(nn.Module):
             self.begin = -1
             self.end = None
             self.loss = getattr(self, 'spread_loss')
-            self.step = (args.batch_size/16.) * 2e-1 / steps
-            self.step *= args.mstep
+            self.step = 0.7*steps / 5. #(args.batch_size/16.) * 2e-1 / steps
+            #self.step *= args.mstep
+            if args.pretrained:
+                self.m = 0.9
+            else:
+                self.m = 0.2
+        if args.dataset == 'smallNORB':
+            self.begin = -1
+            self.end = None
+            self.loss = getattr(self, 'my_spread_loss')
+            self.step = 0.7*steps / 20.
             if args.pretrained:
                 self.m = 0.9
             else:
@@ -55,6 +65,20 @@ class CapsuleLoss(nn.Module):
         if self.m < 0.9:
             self.m += self.step
         return loss
+    
+    def my_spread_loss(self, x, target):
+        b, E = x.shape
+        at = torch.cuda.FloatTensor(b).fill_(0)
+        for i, lb in enumerate(target):
+            at[i] = x[i][lb]
+        at = at.view(b, 1).repeat(1, E)
+        zeros = x.new_zeros(x.shape)
+        loss = torch.max(self.m - (at - x), zeros)
+        loss = loss**2
+        loss = loss.sum() / b - self.m**2
+        if self.m < 0.9:
+            self.m += self.step
+        return loss    
     
     def forward(self, output, labels):
         x = output.view(output.shape[0], -1, output.shape[-1])[:,:,self.begin:self.end].squeeze()
@@ -82,7 +106,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=4, metavar='N', help='num of workers to fetch data')
     parser.add_argument('--patience', type=int, default=20, metavar='N', help='Scheduler patience')
     parser.add_argument('--dataset', type=str, default='images', metavar='N', help='dataset options: images,three_dot_3d')
-    parser.add_argument('--mstep', type=float, default=1, metavar='N', help='step rate of m in spreadloss')
+    #parser.add_argument('--mstep', type=float, default=1, metavar='N', help='step rate of m in spreadloss')
     args = parser.parse_args()
     time_dump = int(time.time())
 
@@ -90,6 +114,7 @@ if __name__ == '__main__':
     """
     Load training data
     """
+    classification = False
     if args.dataset == 'three_dot':
         train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
@@ -99,6 +124,12 @@ if __name__ == '__main__':
     elif args.dataset[:5] == 'MNIST':
         train_dataset = datasets.MNIST(root='../../data/', train=True, transform=transforms.ToTensor(), download=True)
         test_dataset = datasets.MNIST(root='../../data/', train=False, transform=transforms.ToTensor())
+        classification = True
+    elif args.dataset == 'smallNORB':   # transforms.Resize(48),
+        train_dataset = smallNORB('../../data/smallnorb/', train=True, download=True, transform=transforms.Compose([transforms.RandomCrop(64),transforms.ColorJitter(brightness=32./255, contrast=0.5),transforms.ToTensor()]))
+        test_dataset = smallNORB('../../data/smallnorb/', train=False,transform=transforms.Compose([transforms.CenterCrop(64),transforms.ToTensor()]))
+        classification = True
+        #num_class = 5
     else:
         train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
         test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
@@ -118,7 +149,8 @@ if __name__ == '__main__':
     model = CapsNet(args.dataset)
     model(imgs)
     print("# model parameters:", sum(param.numel() for param in model.parameters()))
-    if not args.disable_cuda and torch.cuda.is_available():
+    use_cuda = not args.disable_cuda and torch.cuda.is_available()
+    if use_cuda:
         model.cuda()
         imgs = imgs.cuda()
     if args.jit:
@@ -129,8 +161,8 @@ if __name__ == '__main__':
     Construct optimizer, scheduler, and loss functions
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-3, betas=(0.99, 0.999))
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, verbose=True)
-    caps_loss = CapsuleLoss(args, len(train_dataset)) #nn.MSELoss(reduction='sum') #MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, threshold=1e-6, verbose=True)
+    caps_loss = CapsuleLoss(args, 1/(len(train_dataset)/args.batch_size)) #nn.MSELoss(reduction='sum') #MSELossWeighted(args.batch_size, 1.0, pretrained=args.pretrained)
     recon_loss = nn.MSELoss(reduction='sum')
 
 
@@ -138,7 +170,7 @@ if __name__ == '__main__':
     Loading weights of previously saved states and optimizer state
     """
     if args.pretrained is not None:
-        util.load_pretrained(model, optimizer, args.pretrained, args.lr, not args.disable_cuda)
+        util.load_pretrained(model, optimizer, args.pretrained, args.lr, use_cuda)
 
 
     """
@@ -215,7 +247,7 @@ if __name__ == '__main__':
 
                 imgs = Variable(imgs)
                 #labels = util.matMinRep_from_qvec(labels)
-                if not args.disable_cuda:
+                if use_cuda:
                     imgs = imgs.cuda()
                     labels = labels.cuda()
 
@@ -259,7 +291,7 @@ if __name__ == '__main__':
                 loss /= args.batch_size
                 meter_loss.add(loss.data.cpu().item())
                 
-                if args.dataset[:5] == 'MNIST':
+                if classification:
                     meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
                     pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
                 else:
@@ -289,7 +321,7 @@ if __name__ == '__main__':
                 """
                 model.cpu()
                 torch.save(model.state_dict(), "./weights/model_{}.pth".format(epoch))
-                if not args.disable_cuda:
+                if use_cuda:
                     model.cuda()
                 torch.save(optimizer.state_dict(), "./weights/optim.pth")
 
@@ -318,7 +350,7 @@ if __name__ == '__main__':
                     
                     imgs = Variable(imgs)
                     #labels = util.matMinRep_from_qvec(labels)
-                    if not args.disable_cuda:
+                    if use_cuda:
                         imgs = imgs.cuda()
                         labels = labels.cuda()
     
@@ -343,7 +375,7 @@ if __name__ == '__main__':
                         loss += add_loss
                         test_loss_recon += add_loss.data.cpu().item()
                 
-                    if args.dataset[:5] == 'MNIST':
+                    if classification:
                         meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
 
             test_loss /= steps_test
