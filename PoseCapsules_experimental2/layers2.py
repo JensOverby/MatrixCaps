@@ -125,20 +125,22 @@ class ActivatePathway(nn.Module):
         return self.container[0]
 
 class BNLayer(nn.Module):
-    def __init__(self):
+    def __init__(self, func='BatchNorm2d'):
         super(BNLayer, self).__init__()
+        self.func = func
         self.not_initialized = True
 
     def forward(self, x):
         shp = x.shape
-        xx = x[:,:,:,:shp[3]-1,:,:].contiguous().view(shp[0]*shp[1], shp[2]*(shp[3]-1), shp[4], shp[5])
-        yy = x[:,:,:,shp[3]-1:,:,:]
+        xx = x[:,:,:,:shp[3]-1,...].contiguous().view((shp[0]*shp[1], shp[2]*(shp[3]-1)) + shp[4:])
+        yy = x[:,:,:,shp[3]-1:,...]
         if self.not_initialized:
-            self.batchnorm = nn.BatchNorm2d(num_features=xx.shape[1])
+            BatchNormFunc = getattr(nn,self.func)
+            self.batchnorm = BatchNormFunc(num_features=xx.shape[1])
             if x.is_cuda:
                 self.batchnorm.cuda()
             self.not_initialized = False
-        xx = self.batchnorm(xx).view(shp[0], shp[1], shp[2], shp[3]-1, shp[4], shp[5])
+        xx = self.batchnorm(xx).view(shp[:3] + (shp[3]-1,) + shp[4:])
         xx = torch.tanh(xx)
         yy = torch.sigmoid(yy)
         x = torch.cat([xx,yy], dim=3)

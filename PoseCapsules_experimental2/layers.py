@@ -15,11 +15,17 @@ ln_2pi = math.log(2*math.pi)
 def calc_out(input_, kernel=1, stride=1, padding=0, dilation=1):
     return int((input_ + 2*padding - dilation*(kernel-1) - 1) / stride) + 1
 
-def calc_padding(i, k=1, s=1, d=1):
+def calc_padding(i, k=1, s=1, d=1, dim=2):
     pad = int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
     if (k%2) == 0:
-        return (pad+1, pad, pad+1, pad)
-    return (pad, pad, pad, pad)
+        padding = (pad+1, pad)
+    else:
+        padding = (pad, pad)
+    pad = padding
+    for i in range(dim-1):
+        pad = pad + padding
+    return pad
+        
     #return int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
 """
     o = (i + 2*p - k - (k-1)*(d-1)) / s + 1
@@ -78,6 +84,7 @@ class MatrixToConv(nn.Module):
     def __init__(self):
         super(MatrixToConv, self).__init__()
     def forward(self, x):
+        x = x[0]
         return x.permute(0,1,4,2,3).contiguous().view(x.shape[0], -1, x.shape[2], x.shape[3])
 
 class SinusEncoderLayer(nn.Module):
@@ -223,9 +230,11 @@ class PrimMatrix2d(nn.Module):
 
         if self.advanced:
             #y = x.view(x.shape[0]*x.shape[1], x.shape[2], x.shape[3], x.shape[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
-            same_padding = calc_padding(x.shape[-1], self.kernel_size, 1)
-            self.pad_pre = nn.ConstantPad2d(same_padding, 0.)
-            self.conv_pre = nn.Conv2d(in_channels=in_channels*in_h,
+            same_padding = calc_padding(x.shape[-1], self.kernel_size, s=1, dim=len(x.shape)-3)
+            PadFunc = getattr(nn, 'ConstantPad' + self.func[-2:])
+            self.pad_pre = PadFunc(same_padding, 0.)
+            ConvPreFunc = getattr(nn, 'Conv' + self.func[-2:])
+            self.conv_pre = ConvPreFunc(in_channels=in_channels*in_h,
                                            out_channels=in_channels*in_h,
                                            kernel_size=self.kernel_size,
                                            stride=1,
@@ -269,40 +278,35 @@ class PrimMatrix2d(nn.Module):
         """ x: batch_size, input_dim, input_atoms, dim_x, dim_y """
         if type(x) is tuple:
             x = x[0]
-        shp = x.shape                                           # batch_size, input_dim, input_atoms, dim_x, dim_y
-
-        if len(shp) == 4:
-            """ If previous was Conv2d """
+            shp = x.shape                                           # batch_size, input_dim, input_atoms, dim_x, dim_y
+            if shp[-3] == shp[-2] and shp[-2] != shp[-1]:
+                """ If previous was MatrixRouting """
+                s = list(range(0, len(shp)-1))
+                x = x.permute(s[:2] + [-1] + s[2:])
+        else:
+            """ Previous was Conv2d """
             x = x.unsqueeze(1)
-            shp = x.shape
-        elif shp[-3] == shp[-2] and shp[-2] != shp[-1]:
-            """ If previous was MatrixRouting """
-            x = x.permute(0,1,4,2,3)
-            shp = x.shape
-        elif len(shp) == 6:
-            shp = list(shp)
-            shp[1] = shp[1]*shp[2]
-            shp.pop(2)
-            x = x.view(shp)
+        shp = x.shape
+            
         if self.not_initialized:
             self.init(x)
         in_h = shp[2] - 1
         
-        x = x.view(shp[0]*shp[1], shp[2], shp[3], shp[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
+        x = x.view((shp[0]*shp[1],) + shp[2:])  # batch_size*input_dim, input_atoms, dim_x, dim_y
 
         if self.advanced:
-            votes = self.pad_pre(x[:,:in_h,:,:])
+            votes = self.pad_pre(x[:,:in_h,...])
             votes = self.conv_pre(votes)
             votes = F.relu(votes, inplace=True)
-            votes = torch.cat([x[:,:in_h,:,:], votes], dim=1)
+            votes = torch.cat([x[:,:in_h,...], votes], dim=1)
             votes = self.conv(votes)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         else:
-            votes = self.conv(x[:,:in_h,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
-        votes = votes.view(shp[0], -1, self.output_dim, self.h, votes.size(-2), votes.size(-1))
+            votes = self.conv(x[:,:in_h,...])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+        votes = votes.view((shp[0], -1, self.output_dim, self.h) + votes.shape[2:])
 
-        activations = self.conv_a(x[:,in_h:,:,:])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+        activations = self.conv_a(x[:,in_h:,...])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         #activations = torch.sigmoid(activations)
-        activations = activations.view(shp[0], -1, 1, 1, activations.size(-2), activations.size(-1)).repeat(1,1,self.output_dim,1,1,1)
+        activations = activations.view((shp[0], -1, 1, 1) + activations.shape[2:]).expand(votes.shape[:3] + (1,) + votes.shape[4:])
 
         x = torch.cat([votes, activations], dim=3) # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
         return x
@@ -487,13 +491,14 @@ class MatrixRouting(nn.Module):
         shp = votes.shape
 
         """ If previous was ConvVector2d """
-        if len(shp) == 6: # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
-            v = votes.permute(0,1,2,4,5,3).contiguous()
-            v = v.view(shp[0], shp[1], shp[2]*shp[4]*shp[5], shp[3])
-            w_x, w_y = shp[-2], shp[-1]
+        if len(shp) > 5: # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
+            vs = list(range(0, len(shp)))
+            v = votes.permute(vs[:3] + vs[4:] + [3]).contiguous()
+            v = v.view(shp[0], shp[1], -1, shp[3])
+            w = shp[-2]
             shp = v.shape
         else:
-            w_x = w_y = int(math.sqrt(shp[2] / self.output_dim))
+            w = int(math.sqrt(shp[2] / self.output_dim))
             v = votes
 
         b, Bkk, Cww, h = shp
@@ -540,9 +545,9 @@ class MatrixRouting(nn.Module):
                 ap = a[:,None,:] * p_j_h.sum(-1)
                 R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + eps) + eps, requires_grad=False) # detaches from graph
 
-        mu_a = torch.cat([mu.view(b, self.output_dim, w_x, w_y, -1), a.view(b, self.output_dim, w_x, w_y, 1)], dim=-1) # b, C, w, w, h
+        mu_a = torch.cat([mu.view((b, self.output_dim) + votes.shape[4:] + (-1,)), a.view((b, self.output_dim) + votes.shape[4:] + (1,))], dim=-1) # b, C, w, w, h
 
-        return mu_a #, R.view(b, Bkk, self.output_dim, w_x, w_y), votes
+        return mu_a, None #R.view((b, Bkk, self.output_dim) + votes.shape[4:]), votes
 
 
 class MaxPool(nn.Module):

@@ -23,7 +23,7 @@ import torchnet as tnt
 from torchnet.logger import VisdomPlotLogger, VisdomLogger
 #from sklearn.datasets.lfw import _load_imgs
 from torch.autograd import detect_anomaly
-from datasets import smallNORB
+from datasets import smallNORB, MARAHandDataset #, transform_train
 
 torch.manual_seed(1991)
 torch.cuda.manual_seed(1991)
@@ -130,6 +130,9 @@ if __name__ == '__main__':
         test_dataset = smallNORB('../../data/smallnorb/', train=False,transform=transforms.Compose([transforms.CenterCrop(64),transforms.ToTensor()]))
         classification = True
         #num_class = 5
+    elif args.dataset == 'msra':
+        train_dataset = MARAHandDataset('../../data/cvpr15_MSRAHandGestureDB', 'train', 3)
+        test_dataset = MARAHandDataset('../../data/cvpr15_MSRAHandGestureDB', 'test', 3)
     else:
         train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
         test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
@@ -147,14 +150,15 @@ if __name__ == '__main__':
     """
     imgs = imgs[:2]
     model = CapsNet(args.dataset)
-    model(imgs)
-    print("# model parameters:", sum(param.numel() for param in model.parameters()))
     use_cuda = not args.disable_cuda and torch.cuda.is_available()
     if use_cuda:
         model.cuda()
         imgs = imgs.cuda()
     if args.jit:
         model = torch.jit.trace(model, (imgs), check_inputs=[(imgs)])
+    else:
+        model(imgs)
+    print("# model parameters:", sum(param.numel() for param in model.parameters()))
 
 
     """
@@ -256,7 +260,7 @@ if __name__ == '__main__':
                 """
                 """
                 optimizer.zero_grad()
-                out_labels = model.capsules(imgs)
+                out_labels = model.capsules(imgs)[0]
 
 
                 """ LOSS CALCULATION """
@@ -271,7 +275,7 @@ if __name__ == '__main__':
                     i_imgs = imgs
                     if i_imgs.shape[-1] > 100:
                         i_imgs = F.interpolate(i_imgs, size=100)
-                    recon = model.image_decoder(out_labels)
+                    recon = model.image_decoder((out_labels,None))
                     recon = recon.view_as(i_imgs)
                     add_loss = recon_loss(recon, i_imgs)
                     loss += model.recon_factor * add_loss
@@ -295,13 +299,13 @@ if __name__ == '__main__':
                     meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
                     pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
                 else:
-                    medErr, xyzErr = util.get_error(out_labels[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
-                    medErrAvg.add(medErr)
-                    xyzErrAvg.add(xyzErr)
+                    #medErr, xyzErr = util.get_error(out_labels[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
+                    #medErrAvg.add(medErr)
+                    #xyzErrAvg.add(xyzErr)
                     if not args.disable_recon:
                         pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
                     else:
-                        pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
+                        pbar.set_postfix(loss=meter_loss.value()[0]) #, AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
                 
                 pbar.update()
 
@@ -355,7 +359,7 @@ if __name__ == '__main__':
                         labels = labels.cuda()
     
         
-                    out_labels = model.capsules(imgs)
+                    out_labels = model.capsules(imgs)[0]
         
                     loss = caps_loss(out_labels, labels) / args.batch_size
                     test_loss += loss.data.cpu().item()
@@ -368,7 +372,7 @@ if __name__ == '__main__':
                         i_imgs = imgs
                         if i_imgs.shape[-1] > 100:
                             i_imgs = F.interpolate(i_imgs, size=100)
-                        recon = model.image_decoder(out_labels)
+                        recon = model.image_decoder((out_labels,None))
                         recon = recon.view_as(i_imgs)
                         
                         add_loss = model.recon_factor.item() * recon_loss(recon, i_imgs) / args.batch_size
@@ -381,7 +385,8 @@ if __name__ == '__main__':
             test_loss /= steps_test
             test_loss_recon /= steps_test
             
-            print ("Test accuracy: ", meter_accuracy.value()[0])
+            if classification:
+                print ("Test accuracy: ", meter_accuracy.value()[0])
 
             """
             All train data processed: Do logging

@@ -296,10 +296,108 @@ class CapsNet(nn.Module):
                 nn.Linear(1024, img_size),
                 nn.Sigmoid()
             )
+        elif dataset == 'msra':
+            """
+            OBS: primary caps 2 and 3 should be WITHOUT BIAS!! Bias is NOT good...!
+            """
+            A, B, C, D, E, h = 13, 16, 32, 32, 5, 12
             
+            layer_list = OrderedDict()
+            layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=1+1, out_channels=A, kernel_size=15, stride=3, padding=0, bias=False)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=A, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=B, h=h, kernel_size=11, stride=2, padding=0, bias=True)
+            layer_list['bnn1'] = layers2.BNLayer()
+            layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1)
+
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=C, h=h, kernel_size=7, stride=2, padding=0, bias=False, advanced=True)
+            layer_list['bnn2'] = layers2.BNLayer()
+            layer_list['route2'] = layers.MatrixRouting(output_dim=C, num_routing=3)
+
+            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=D, h=h, kernel_size=5, stride=2, padding=0, bias=False, advanced=True)
+            layer_list['bnn3'] = layers2.BNLayer()
+            layer_list['route3'] = layers.MatrixRouting(output_dim=D, num_routing=3)
+
+            self.decoder_input_atoms = 15
+            layer_list['prim4'] = layers.PrimMatrix2d(output_dim=E, h=self.decoder_input_atoms, kernel_size=0, stride=1, padding=0, bias=False, advanced=True)
+            layer_list['bnn4'] = layers2.BNLayer()
+            layer_list['route4'] = layers.MatrixRouting(output_dim=E, num_routing=3)
+            self.capsules = nn.Sequential(layer_list)
+
+            decoder_list = OrderedDict()
+            #decoder_list['prepare'] = layers2.Pose2VectorRepLayer()
+            decoder_list['1transposed'] = layers.PrimMatrix2d(output_dim=32, h=15, kernel_size=10, stride=1, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
+            decoder_list['bnn1_transposed'] = layers2.BNLayer()
+            decoder_list['route1_transposed'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+    
+            decoder_list['2transposed'] = layers.PrimMatrix2d(output_dim=16, h=12, kernel_size=5, stride=2, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
+            decoder_list['bnn2_transposed'] = layers2.BNLayer()
+            decoder_list['route2_transposed'] = layers.MatrixRouting(output_dim=16, num_routing=3)
+    
+            decoder_list['3transposed'] = layers.PrimMatrix2d(output_dim=1, h=12, kernel_size=7, stride=2, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
+            decoder_list['bnn3_transposed'] = layers2.BNLayer()
+            decoder_list['route3_transposed'] = layers.MatrixRouting(output_dim=1, num_routing=3)
+    
+            decoder_list['transform'] = layers.MatrixToConv()
+    
+            decoder_list['conv1_transposed'] = nn.ConvTranspose2d(in_channels=13, out_channels=1, kernel_size=11, stride=2, padding=6, output_padding=1, bias=True)
+            nn.init.normal_(decoder_list['conv1_transposed'].weight.data, mean=0,std=0.1)
+    
+            self.image_decoder = nn.Sequential(decoder_list)
+        """
+        elif dataset == 'msra':
+            layer_list = OrderedDict()
+            layer_list['posenc'] = layers.PosEncoderLayer()
+            layer_list['conv1'] = nn.Conv2d(in_channels=1+1, out_channels=10, kernel_size=11, stride=3, padding=0, bias=False)
+            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
+            layer_list['bn1'] = nn.BatchNorm2d(num_features=10, eps=0.001, momentum=0.1, affine=True)
+            layer_list['relu1'] = nn.ReLU(inplace=True)
+
+            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=16, h=9, kernel_size=7, stride=2, padding=0, bias=True)
+            layer_list['bnn1'] = layers2.BNLayer()
+            layer_list['route1'] = layers.MatrixRouting(output_dim=16, num_routing=1)
+
+            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=32, h=9, kernel_size=5, stride=2, padding=0, bias=False, advanced=True)
+            layer_list['bnn2'] = layers2.BNLayer()
+            layer_list['route2'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+
+            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=64, h=9, kernel_size=5, stride=2, padding=0, bias=False, advanced=True)
+            layer_list['bnn3'] = layers2.BNLayer()
+            layer_list['route3'] = layers.MatrixRouting(output_dim=64, num_routing=3)
+
+            self.decoder_input_atoms = 3
+            layer_list['prim4'] = layers.PrimMatrix2d(output_dim=21, h=self.decoder_input_atoms, kernel_size=0, stride=1, padding=0, bias=False, advanced=True)
+            layer_list['bnn4'] = layers2.BNLayer()
+            layer_list['route4'] = layers.MatrixRouting(output_dim=21, num_routing=3)
+            self.capsules = nn.Sequential(layer_list)
+
+            decoder_list = OrderedDict()
+            #decoder_list['prepare'] = layers2.Pose2VectorRepLayer()
+            decoder_list['1transposed'] = layers.PrimMatrix2d(output_dim=32, h=9, kernel_size=10, stride=1, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
+            decoder_list['bnn1_transposed'] = layers2.BNLayer()
+            decoder_list['route1_transposed'] = layers.MatrixRouting(output_dim=32, num_routing=3)
+    
+            decoder_list['2transposed'] = layers.PrimMatrix2d(output_dim=16, h=9, kernel_size=5, stride=2, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
+            decoder_list['bnn2_transposed'] = layers2.BNLayer()
+            decoder_list['route2_transposed'] = layers.MatrixRouting(output_dim=16, num_routing=3)
+    
+            decoder_list['3transposed'] = layers.PrimMatrix2d(output_dim=1, h=9, kernel_size=5, stride=2, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
+            decoder_list['bnn3_transposed'] = layers2.BNLayer()
+            decoder_list['route3_transposed'] = layers.MatrixRouting(output_dim=1, num_routing=3)
+    
+            decoder_list['transform'] = layers.MatrixToConv()
+    
+            decoder_list['conv1_transposed'] = nn.ConvTranspose2d(in_channels=10, out_channels=1, kernel_size=11, stride=2, padding=0, output_padding=0, bias=True)
+            nn.init.normal_(decoder_list['conv1_transposed'].weight.data, mean=0,std=0.1)
+    
+            self.image_decoder = nn.Sequential(decoder_list)
+        """    
             
     def forward(self, x, disable_recon=False):
         p = self.capsules(x)
-        if not disable_recon:
+        if not disable_recon and self.image_decoder is not None:
             return p, self.image_decoder(p)
         return p
