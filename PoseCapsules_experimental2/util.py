@@ -20,7 +20,122 @@ import glob
 from torchvision import transforms
 import torch.nn as nn
 import pyrr
-from axisAngle import get_y
+import torchnet as tnt
+from torchnet.logger import VisdomPlotLogger, VisdomLogger
+from torchvision.utils import make_grid
+from collections import OrderedDict
+#from axisAngle import get_y
+
+#meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
+#setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
+
+class statBase():
+    def __init__(self, args):
+        self.args = args
+        self.lossAvg = tnt.meter.AverageValueMeter()
+        self.train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
+        self.test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
+        self.recon_sum = 0
+        if not self.args.disable_recon:
+            self.reconLossAvg = tnt.meter.AverageValueMeter()
+            self.ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env='PoseCapsules')
+            self.reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env='PoseCapsules')
+        
+    def reset(self):
+        self.lossAvg.reset()
+        if not self.args.disable_recon:
+            self.reconLossAvg.reset()
+        
+    def log(self, pbar, output, labels, dict = OrderedDict()):
+        dict['loss'] = self.lossAvg.value()[0]
+        if not self.args.disable_recon:
+            #pbar.set_postfix(loss=self.lossAvg.value()[0], refresh=False)
+            #else:
+            dict['rloss'] = self.reconLossAvg.value()[0]
+            dict['rsum'] = self.recon_sum
+            #pbar.set_postfix(loss=self.lossAvg.value()[0], rloss=self.reconLossAvg.value()[0], rsum=self.recon_sum, refresh=False)
+        pbar.set_postfix(dict, refresh=False)
+
+    def endTrainLog(self, epoch, groundtruth_image=None, recon_image=None):
+        self.train_loss = self.lossAvg.value()[0]
+        if not self.args.disable_recon:
+            if groundtruth_image is not None:
+                self.ground_truth_logger_left.log(make_grid(groundtruth_image, nrow=int(self.args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+            if recon_image is not None:
+                self.reconstruction_logger_left.log(make_grid(recon_image.data, nrow=int(self.args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+            self.train_recon_loss = self.reconLossAvg.value()[0]
+            
+    def endTestLog(self, epoch):
+        #loss = self.lossAvg.value()[0]
+        self.train_loss_logger.log(epoch, self.train_loss, name='loss')
+        self.test_loss_logger.log(epoch, self.lossAvg.value()[0], name='loss')
+        if not self.args.disable_recon:
+            self.train_loss_logger.log(epoch, self.train_recon_loss, name='recon')
+            self.test_loss_logger.log(epoch, self.reconLossAvg.value()[0], name='recon')
+        with open("loss.log", "a") as myfile:
+            myfile.write(str(self.train_loss) + '\n')
+
+
+class statClassification(statBase):
+    def __init__(self, args):
+        super(statClassification, self).__init__(args)
+        self.meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
+
+    def reset(self):
+        super(statClassification, self).reset()
+        self.meter_accuracy.reset()
+
+    def log(self, pbar, output, labels):
+        super(statClassification, self).log(pbar, output, labels)
+        self.meter_accuracy.add(output.squeeze()[:,:,-1:].squeeze().data, labels.data)
+        pbar.set_postfix(acc=self.meter_accuracy.value()[0])
+
+    def endTestLog(self, epoch):
+        super(statClassification, self).endTestLog(epoch)
+        print ("Test accuracy: ", self.meter_accuracy.value()[0])
+
+
+class statJoints(statBase):
+    def __init__(self, args, scale = [1.,1.,1.]):
+        super(statJoints, self).__init__(args)
+        self.jointErrAvg = tnt.meter.AverageValueMeter()
+        self.scale = scale
+
+    def reset(self):
+        super(statJoints, self).reset()
+        self.jointErrAvg.reset()
+
+    def log(self, pbar, output, labels):
+        err = (output[:,:4,0,0,:-1].data - labels[:,:4,:]) #.abs().mean().item()
+        err = err.view(err.shape[0], err.shape[1],-1, 3)
+        sc = torch.tensor(self.scale, device=output.device)[None, None, None, :].expand(err.shape)
+        err = err * sc
+        mean = err.norm(dim=3).mean().item()
+        self.jointErrAvg.add(mean)
+        dict = OrderedDict()
+        dict['jointErr'] = self.jointErrAvg.value()[0]
+        super(statJoints, self).log(pbar, output, labels, dict)
+
+class statTransmatrix(statBase):
+    def __init__(self, args):
+        super(statTransmatrix, self).__init__(args)
+        self.angleErrAvg = tnt.meter.AverageValueMeter()
+        self.xyzErrAvg = tnt.meter.AverageValueMeter()    
+
+    def reset(self):
+        super(statTransmatrix, self).reset()
+        self.angleErrAvg.reset()
+        self.xyzErrAvg.reset()
+
+    def log(self, pbar, output, labels):
+        angleErr, xyzErr = get_error(output[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
+        self.angleErrAvg.add(angleErr)
+        self.xyzErrAvg.add(xyzErr)
+        if self.args.disable_recon:
+            pbar.set_postfix(loss=self.lossAvg.value()[0], AngErr=self.angleErrAvg.value()[0], xyzErr=self.xyzErrAvg.value()[0], refresh=False)
+        else:
+            pbar.set_postfix(loss=self.lossAvg.value()[0], rloss=self.reconLossAvg.value()[0], AngErr=self.angleErrAvg.value()[0], xyzErr=self.xyzErrAvg.value()[0], recon_=self.recon_sum, refresh=False)
+
 
 def print_mat(x):
     for i in range(x.size(1)):

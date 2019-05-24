@@ -12,15 +12,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import transforms
-from torchvision.utils import make_grid
 from torchvision import datasets
 import numpy as np
 import random
 import time
 import argparse
 from tqdm import tqdm
-import torchnet as tnt
-from torchnet.logger import VisdomPlotLogger, VisdomLogger
 #from sklearn.datasets.lfw import _load_imgs
 from torch.autograd import detect_anomaly
 from datasets import smallNORB, MARAHandDataset #, transform_train
@@ -114,7 +111,7 @@ if __name__ == '__main__':
     """
     Load training data
     """
-    classification = False
+    #classification = False
     if args.dataset == 'three_dot':
         train_dataset = util.myTest(width=10, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=10, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
@@ -124,15 +121,16 @@ if __name__ == '__main__':
     elif args.dataset[:5] == 'MNIST':
         train_dataset = datasets.MNIST(root='../../data/', train=True, transform=transforms.ToTensor(), download=True)
         test_dataset = datasets.MNIST(root='../../data/', train=False, transform=transforms.ToTensor())
-        classification = True
+        #classification = True
     elif args.dataset == 'smallNORB':   # transforms.Resize(48),
         train_dataset = smallNORB('../../data/smallnorb/', train=True, download=True, transform=transforms.Compose([transforms.RandomCrop(64),transforms.ColorJitter(brightness=32./255, contrast=0.5),transforms.ToTensor()]))
         test_dataset = smallNORB('../../data/smallnorb/', train=False,transform=transforms.Compose([transforms.CenterCrop(64),transforms.ToTensor()]))
-        classification = True
+        #classification = True
         #num_class = 5
     elif args.dataset == 'msra':
-        train_dataset = MARAHandDataset('../../data/cvpr15_MSRAHandGestureDB', 'train', 3)
-        test_dataset = MARAHandDataset('../../data/cvpr15_MSRAHandGestureDB', 'test', 3)
+        train_dataset = MARAHandDataset('../../data/cvpr15_MSRAHandGestureDB', 'train', 2)
+        test_dataset = MARAHandDataset('../../data/cvpr15_MSRAHandGestureDB', 'test', 2)
+        logger = util.statJoints(args, train_dataset.scale)
     else:
         train_dataset = util.MyImageFolder(root='../../data/{}/train/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
         test_dataset = util.MyImageFolder(root='../../data/{}/test/'.format(args.dataset), transform=transforms.ToTensor(), target_transform=transforms.ToTensor())
@@ -194,24 +192,24 @@ if __name__ == '__main__':
     """
     Logging of loss, reconstruction and ground truth
     """
-    meter_loss = tnt.meter.AverageValueMeter()
-    meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
-    medErrAvg = tnt.meter.AverageValueMeter()
-    xyzErrAvg = tnt.meter.AverageValueMeter()    
-    setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
-    train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
-    test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
+    #meter_loss = tnt.meter.AverageValueMeter()
+    #meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
+    #medErrAvg = tnt.meter.AverageValueMeter()
+    #xyzErrAvg = tnt.meter.AverageValueMeter()    
+    #setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
+    #train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
+    #test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
     epoch_offset = 0
     if args.load_loss:
-        epoch_offset = util.load_loss(train_loss_logger, args.load_loss)
-    ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env='PoseCapsules')
-    reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env='PoseCapsules')
-
+        epoch_offset = util.load_loss(logger.train_loss_logger, args.load_loss)
+    #ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env='PoseCapsules')
+    #reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env='PoseCapsules')
+    i_imgs, recon = None, None
 
 
     steps = len(train_dataset) // args.batch_size
     steps_test = len(test_dataset) // args.batch_size
-    for epoch in range(args.num_epochs):
+    for epoch in range(epoch_offset, args.num_epochs):
 
         print("Epoch {}".format(epoch))
 
@@ -221,12 +219,13 @@ if __name__ == '__main__':
         model.train()
 
         with tqdm(total=steps) as pbar:
-            meter_loss.reset()
-            meter_accuracy.reset()
-            medErrAvg.reset()
-            xyzErrAvg.reset()
+            logger.reset()
+            #meter_loss.reset()
+            #meter_accuracy.reset()
+            #medErrAvg.reset()
+            #xyzErrAvg.reset()
 
-            loss_recon = 0
+            #loss_recon = 0
             torch.cuda.empty_cache()
             for _ in range(steps):
                 try:
@@ -266,6 +265,12 @@ if __name__ == '__main__':
                 """ LOSS CALCULATION """
                 loss = caps_loss(out_labels, labels)
 
+                """
+                Logging
+                """
+                #loss /= args.batch_size
+                logger.lossAvg.add(loss.data.cpu().item()/args.batch_size)
+
 
                 if not args.disable_recon:
                     #if imgs.shape[1] > 1:
@@ -279,8 +284,9 @@ if __name__ == '__main__':
                     recon = recon.view_as(i_imgs)
                     add_loss = recon_loss(recon, i_imgs)
                     loss += model.recon_factor * add_loss
-                    loss_recon += model.recon_factor.item()*add_loss.data.cpu().item() / args.batch_size
-
+                    #loss_recon += model.recon_factor.item()*add_loss.data.cpu().item() / args.batch_size
+                    logger.reconLossAvg.add(model.recon_factor.item()*add_loss.data.cpu().item() / args.batch_size)
+                    logger.recon_sum = recon.sum().data.cpu().item()
 
                 torch.autograd.set_detect_anomaly(True)
                 with detect_anomaly():
@@ -289,31 +295,27 @@ if __name__ == '__main__':
                 optimizer.step()
 
                 
-                """
-                Logging
-                """
-                loss /= args.batch_size
-                meter_loss.add(loss.data.cpu().item())
                 
-                if classification:
-                    meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
-                    pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
-                else:
+                #if classification:
+                #    meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
+                #    pbar.set_postfix(loss=meter_loss.value()[0], acc=meter_accuracy.value()[0])
+                #else:
+                logger.log(pbar, out_labels, labels)
                     #medErr, xyzErr = util.get_error(out_labels[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
                     #medErrAvg.add(medErr)
                     #xyzErrAvg.add(xyzErr)
-                    if not args.disable_recon:
-                        pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
-                    else:
-                        pbar.set_postfix(loss=meter_loss.value()[0]) #, AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
+                    #if not args.disable_recon:
+                    #    pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0], recon_=recon.sum().data.cpu().item())
+                    #else:
+                    #    pbar.set_postfix(loss=meter_loss.value()[0], AngErr=medErrAvg.value()[0], xyzErr=xyzErrAvg.value()[0])
                 
                 pbar.update()
 
 
-
-            if not args.disable_recon:
-                ground_truth_logger_left.log(make_grid(i_imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
-                reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+            logger.endTrainLog(epoch, i_imgs, recon)
+            #if not args.disable_recon:
+            #    ground_truth_logger_left.log(make_grid(i_imgs, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
+            #    reconstruction_logger_left.log(make_grid(recon.data, nrow=int(args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
 
 
 
@@ -330,15 +332,19 @@ if __name__ == '__main__':
                 torch.save(optimizer.state_dict(), "./weights/optim.pth")
 
                 
-            """
-            Test Loop
-            """
+        """
+        Test Loop
+        """
+        model.eval()
+        print()
+        print("Testing...")
+        with tqdm(total=steps_test) as pbar:
+            logger.reset()
             
-            test_loss = 0
-            test_loss_recon = 0
-            model.eval()
-            meter_accuracy.reset()
-            print("Testing...")
+            #test_loss = 0
+            #test_loss_recon = 0
+            #logger.reset()
+            #meter_accuracy.reset()
             
             optimizer.zero_grad()
             torch.cuda.empty_cache()
@@ -361,8 +367,11 @@ if __name__ == '__main__':
         
                     out_labels = model.capsules(imgs)[0]
         
-                    loss = caps_loss(out_labels, labels) / args.batch_size
-                    test_loss += loss.data.cpu().item()
+                    loss = caps_loss(out_labels, labels) #/ args.batch_size
+                    #test_loss += loss.data.cpu().item()
+
+                    logger.lossAvg.add(loss.data.cpu().item()/args.batch_size)
+
 
                     if not args.disable_recon:
                         #if imgs.shape[1] > 1:
@@ -375,44 +384,47 @@ if __name__ == '__main__':
                         recon = model.image_decoder((out_labels,None))
                         recon = recon.view_as(i_imgs)
                         
-                        add_loss = model.recon_factor.item() * recon_loss(recon, i_imgs) / args.batch_size
-                        loss += add_loss
-                        test_loss_recon += add_loss.data.cpu().item()
+                        add_loss = recon_loss(recon, i_imgs)
+                        #loss += add_loss
+                        #test_loss_recon += add_loss.data.cpu().item()
+                        logger.reconLossAvg.add(model.recon_factor.item()*add_loss.data.cpu().item() / args.batch_size)
+                        
+                    logger.log(pbar, out_labels, labels)
+                    pbar.update()
                 
-                    if classification:
-                        meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
+                    #if classification:
+                    #    meter_accuracy.add(out_labels.squeeze()[:,:,-1:].squeeze().data, labels.data)
 
-            test_loss /= steps_test
-            test_loss_recon /= steps_test
+            #test_loss /= steps_test
+            #test_loss_recon /= steps_test
             
-            if classification:
-                print ("Test accuracy: ", meter_accuracy.value()[0])
 
             """
             All train data processed: Do logging
             """
-            loss = meter_loss.value()[0]
-            loss_recon /= steps
-            train_loss_logger.log(epoch + epoch_offset, loss-loss_recon, name='loss')
-            test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
+            logger.endTestLog(epoch)
+            #loss = meter_loss.value()[0]
+            #loss_recon /= steps
+            #train_loss_logger.log(epoch + epoch_offset, loss-loss_recon, name='loss')
+            #test_loss_logger.log(epoch + epoch_offset, test_loss, name='loss')
 
-            if not args.disable_recon:
-                train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
-                test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
+            #if not args.disable_recon:
+            #    train_loss_logger.log(epoch + epoch_offset, loss_recon, name='recon')
+            #    test_loss_logger.log(epoch + epoch_offset, test_loss_recon, name='recon')
             
-            with open("loss.log", "a") as myfile:
-                myfile.write(str(loss) + '\n')
+            #with open("loss.log", "a") as myfile:
+            #    myfile.write(str(loss) + '\n')
 
 
 
             """
             Scheduler
             """
-            scheduler.step(loss)
+            scheduler.step(logger.train_loss)
             
             if not args.disable_recon and ramp_recon_counter==0:
-                pose_loss = loss-loss_recon
-                diff_factor = pose_loss / (loss_recon*4)
+                #pose_loss = loss-loss_recon
+                diff_factor = logger.train_loss / (logger.train_recon_loss*10)
                 if diff_factor > 1:
                     model.recon_factor += 0.2*model.recon_factor*(1-1/diff_factor)
                 else:

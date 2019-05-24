@@ -2,6 +2,7 @@ import os
 import numpy as np
 import struct
 from torch.utils.data import Dataset
+from scipy.misc import imresize
 #from .v2v_util import V2VVoxelization
 
 def pixel2world(x, y, z, img_width, img_height, fx, fy):
@@ -54,7 +55,7 @@ def load_depthmap(filename, img_width, img_height, max_depth):
 
         return depth_image
 
-
+"""
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
@@ -91,7 +92,7 @@ def save_to_jpg(filename, array, format="PNG"):
     image = Image.fromarray(array)
     image = image.convert("L")
     image.save(filename, format)
-
+"""
 
 class MARAHandDataset(Dataset):
     def __init__(self, root, mode, test_subject_id, transform=None):
@@ -121,7 +122,8 @@ class MARAHandDataset(Dataset):
         
         """ NORMALIZE """
         coords = []
-        for i in range(self.joints_world.shape[2]):
+        self.scale = [1.,1.,1.]
+        for i in range(3):
             min_a = self.joints_world[:,:,i].min()
             min_b = self.joints_world_alt[:,:,i].min()
             max_a = self.joints_world[:,:,i].max()
@@ -130,7 +132,8 @@ class MARAHandDataset(Dataset):
             max = max_a if max_a > max_b else max_b
             coord = self.joints_world[:,:,i].copy()
             coord -= min
-            coord /= ((max-min)/1.8)
+            self.scale[i] = (max-min)/1.8
+            coord /= self.scale[i]
             coord -= 0.9
             coords.append(coord)
         self.joints_world_normalized = np.stack(coords, axis=2)
@@ -149,6 +152,13 @@ class MARAHandDataset(Dataset):
 
         #self.joints_world_normalized = np.concatenate([fingers, wrist, np.zeros((fingers.shape[0], 3, 3), dtype=np.float32)], axis=1)
         
+        self.joints_world_normalized = self.joints_world_normalized.reshape(self.joints_world_normalized.shape[0], 5, -1, 3)
+
+        l = [self.joints_world_normalized[:,:,-1,:]]
+        for i in reversed(range(4)):
+            l.append( self.joints_world_normalized[:,:,i,:] - self.joints_world_normalized[:,:,i+1,:] )
+
+        self.joints_world_normalized = np.stack(l, axis=2)
         self.joints_world_normalized = self.joints_world_normalized.reshape(self.joints_world_normalized.shape[0], 5, -1)
         
         self.not_initialized = True
@@ -184,6 +194,9 @@ class MARAHandDataset(Dataset):
 
         #depth_image = np.zeros((self.img_width-self.img_height, self.img_width), dtype=np.float32)
         depthmap = np.concatenate([depthmap, np.zeros((self.img_width-self.img_height, self.img_width), dtype=np.float32)], axis=0)
+        
+        #depthmap = imresize(depthmap, (100,100), interp='bilinear', mode='F')
+        
         
         return depthmap.reshape((1, *depthmap.shape)), np.float32(self.joints_world_normalized[index])
             #save_to_jpg('test%1.png', depthmap, format="PNG")
