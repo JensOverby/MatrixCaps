@@ -1,9 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
+from torch.autograd import Variable, Function
 import math
-from batchrenorm import BatchRenorm
+#from batchrenorm import BatchRenorm, Sigmoid
+import batchrenorm
+import util
+from torchvision.transforms.functional import affine
 #from caffe2.python.embedding_generation_benchmark import device
 
 votes_t_shape = [3, 0, 1, 2, 4, 5]
@@ -26,7 +29,6 @@ def calc_padding(i, k=1, s=1, d=1, dim=2):
         pad = pad + padding
     return pad
         
-    #return int( (s*(i-1) - i + k + (k-1)*(d-1)) / 2 )
 """
     o = (i + 2*p - k - (k-1)*(d-1)) / s + 1
     s*o = (i + 2*p - k - (k-1)*(d-1)) + s
@@ -84,8 +86,12 @@ class MatrixToConv(nn.Module):
     def __init__(self):
         super(MatrixToConv, self).__init__()
     def forward(self, x):
+        y = x[1]
         x = x[0]
-        return x.permute(0,1,4,2,3).contiguous().view(x.shape[0], -1, x.shape[2], x.shape[3])
+        shp = x.shape
+        x = x.permute(0,1,4,2,3).contiguous().view(shp[0], -1, shp[2], shp[3])
+        y = y.view(shp[0], -1, shp[2], shp[3])
+        return torch.cat([x, y], dim=1)
 
 class SinusEncoderLayer(nn.Module):
     """
@@ -208,7 +214,7 @@ class ConvVector2d(nn.Module):
 
 
 class PrimMatrix2d(nn.Module):
-    def __init__(self, output_dim, h, kernel_size, stride, padding, bias, advanced=False, func='Conv2d'):
+    def __init__(self, output_dim, h, kernel_size, stride, padding, bias, advanced=False, func='Conv2d', pool=False):
         super(PrimMatrix2d, self).__init__()
         self.output_dim = output_dim
         self.h = h
@@ -219,17 +225,17 @@ class PrimMatrix2d(nn.Module):
         self.advanced = advanced
         self.not_initialized = True
         self.func = func
+        self.pool = pool
         
     def init(self, x): # batch_size, input_dim, input_atoms, dim_x, dim_y
-        in_channels = 1 #int(x.size(2)/(self.h+1))
-        in_h = x.shape[2] - 1
+        in_channels = 1
+        in_h = x.shape[2]
         ConvFunc = getattr(nn,self.func)
         
         if self.kernel_size == 0:
             self.kernel_size = x.shape[-1]
 
         if self.advanced:
-            #y = x.view(x.shape[0]*x.shape[1], x.shape[2], x.shape[3], x.shape[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
             same_padding = calc_padding(x.shape[-1], self.kernel_size, s=1, dim=len(x.shape)-3)
             PadFunc = getattr(nn, 'ConstantPad' + self.func[-2:])
             self.pad_pre = PadFunc(same_padding, 0.)
@@ -260,23 +266,28 @@ class PrimMatrix2d(nn.Module):
         if self.bias:
             nn.init.normal_(self.conv.bias.data, mean=0,std=0.1)
 
-        self.conv_a = ConvFunc(in_channels=1,
-                                       out_channels=1,
-                                       kernel_size=self.kernel_size,
-                                       stride=self.stride,
-                                       padding=self.padding,
-                                       bias=self.bias)
-        if x.is_cuda:
-            self.conv_a.cuda()
-        nn.init.normal_(self.conv_a.weight.data, mean=0,std=0.1)
-        if self.bias:
-            nn.init.normal_(self.conv_a.bias.data, mean=0,std=0.1)
+        if self.pool:
+            self.conv_a = torch.nn.AvgPool2d(kernel_size=self.kernel_size, stride=self.stride, padding=self.padding)
+        else:
+            self.conv_a = ConvFunc(in_channels=1,
+                                           out_channels=1,
+                                           kernel_size=self.kernel_size,
+                                           stride=self.stride,
+                                           padding=self.padding,
+                                           bias=self.bias)
+            
+            if x.is_cuda:
+                self.conv_a.cuda()
+            nn.init.normal_(self.conv_a.weight.data, mean=0,std=0.1)
+            if self.bias:
+                nn.init.normal_(self.conv_a.bias.data, mean=0,std=0.1)
             
         self.not_initialized = False
 
     def forward(self, x):
         """ x: batch_size, input_dim, input_atoms, dim_x, dim_y """
         if type(x) is tuple:
+            y = x[1]
             x = x[0]
             shp = x.shape                                           # batch_size, input_dim, input_atoms, dim_x, dim_y
             if shp[-3] == shp[-2] and shp[-2] != shp[-1]:
@@ -286,30 +297,30 @@ class PrimMatrix2d(nn.Module):
         else:
             """ Previous was Conv2d """
             x = x.unsqueeze(1)
+            y = x[:,:,-1,...]
+            x = x[:,:,:-1,...]
         shp = x.shape
             
         if self.not_initialized:
             self.init(x)
-        in_h = shp[2] - 1
         
         x = x.view((shp[0]*shp[1],) + shp[2:])  # batch_size*input_dim, input_atoms, dim_x, dim_y
 
         if self.advanced:
-            votes = self.pad_pre(x[:,:in_h,...])
+            votes = self.pad_pre(x)
             votes = self.conv_pre(votes)
             votes = F.relu(votes, inplace=True)
-            votes = torch.cat([x[:,:in_h,...], votes], dim=1)
+            votes = torch.cat([x, votes], dim=1)
             votes = self.conv(votes)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         else:
-            votes = self.conv(x[:,:in_h,...])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
+            votes = self.conv(x)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         votes = votes.view((shp[0], -1, self.output_dim, self.h) + votes.shape[2:])
 
-        activations = self.conv_a(x[:,in_h:,...])                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
-        #activations = torch.sigmoid(activations)
+        activations = self.conv_a(y.view(-1, 1, shp[-2], shp[-1]))                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
         activations = activations.view((shp[0], -1, 1, 1) + activations.shape[2:]).expand(votes.shape[:3] + (1,) + votes.shape[4:])
 
-        x = torch.cat([votes, activations], dim=3) # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
-        return x
+        #x = torch.cat([votes, activations], dim=3) # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
+        return votes, activations
 
 
 class ConvMatrix2d(nn.Module):
@@ -344,7 +355,7 @@ class ConvMatrix2d(nn.Module):
         w = int((width_in - self.kernel_size) / self.stride + 1)
         Bkk = input_dim*self.kernel_size*self.kernel_size
         Cww = self.output_dim*w*w
-        #x = x.permute(0,1,3,4,2) # move hh to the end -> batch, input_dim, dim_x, dim_y, input_atoms
+
         pose_list = []
         for j in range(w):
             for i in range(w):
@@ -476,35 +487,239 @@ class VectorRouting(nn.Module):
         return x, route, votes
 
 
+class SparseCoding(nn.Module):
+
+    def __init__(self, num_features, type='lifetime', ema_decay=0.95, target_min_boost=0.96, target_max_boost=4., 
+                 down_boost_factor=0.05, up_boost_factor=0.05, boost_update_count=1000, sparsity=60/100, return_mask=False, active=True):
+        super(SparseCoding, self).__init__()
+        self.lifetime = type=='lifetime'
+        self.ema_decay=ema_decay
+        self.target_min_freq=target_min_boost # Is downscaled in initialization
+        self.target_max_freq=target_max_boost # Is downscaled in initialization
+        self.down_boost_factor=down_boost_factor
+        self.up_boost_factor=up_boost_factor
+        self.boost_update_count = boost_update_count
+        self.N = 0
+        self.register_buffer('boosting_weights', torch.ones(num_features))
+        self.register_buffer('freq_ema', torch.zeros(num_features))
+        self.register_buffer('ramp_in', torch.tensor([1.]))
+        self.sparsity = sparsity
+        self.return_mask = return_mask
+        self.active = active
+        self.not_initialized = True
+
+    """
+    batch, dim, dim, input_dim (prim_capsules), output_dim
+    
+    Find max routing values across all input capsules -> batch,dim,dim,output_dim
+    (max of input_dim)
+    
+    Sum 2nd dim (column), and then sum 1st dim (row) -> batch,output_dim
+    """
+
+    def update(self, R):
+        """
+        x: batch_size, output_dim, h, (dim_x, dim_y)
+
+        Converts the capsule mask into an appropriate shape then applies it to
+        the capsule embedding.
+    
+        Args:
+          route: tensor, output of the last capsule layer.
+          num_prime_capsules: scalar, number of primary capsules.
+          num_latent_capsules: scalar, number of latent capsules.
+          verbose: boolean, visualises the variables in Tensorboard.
+          ema_decay: scalar, the expontential decay rate for the moving average.
+          steepness_factor: scalar, controls the routing mask weights.
+          clip_threshold: scalar, threshold for clipping values in the mask.
+    
+        Returns:
+          The routing mask and the routing ranks.
+        """
+
+        shp = R.shape
+        if len(shp) == 5:
+            capsule_routing = R.data.view(shp[0]*shp[1], shp[2], -1)
+        else:
+            capsule_routing = R.data.view(shp[0],shp[1],-1) #.view(shp[0], shp[1], -1)
+        
+        """ Calculate routing coefficients """
+        # route: batch_size, input_dim, output_dim, dim_x, dim_y
+        #capsule_routing = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
+
+        """
+        old=0
+        bin=[]
+        min = capsule_routing.min()
+        iterations = 20
+        step = (capsule_routing.max() - min) / iterations
+        for i in range(iterations):
+            val = (capsule_routing < (min + i*step)).sum().item() - old
+            bin.append(val)
+            old += val
+        """
+        
+        
+        """ Boosting """
+        #if self.not_initialized:
+        #    self.register_buffer('boosting_weights', torch.ones(capsule_routing.shape[1], device=R.device))
+        #if self.training:
+        #capsule_routing *= self.boosting_weights
+
+        if self.lifetime:
+            """ Rank routing coefficients """
+            capsule_routing = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
+            order = capsule_routing.sort(1, descending=True)[1]
+            ranks = (-order).sort(1, descending=True)[1]
+        
+            #if self.training:
+            """ Winning frequency """
+            #transposed_ranks = ranks.transpose(1,0)  # output_dim, batch_size*input_dim
+            win_counts = (ranks == 0).sum(dim=0) #(transposed_ranks == 0).sum(dim=1) # output_dim
+            freq = win_counts.float() / ranks.shape[0] # output_dim
+        else:
+            #order = capsule_routing.sort(1, descending=False)[1]
+            #score = order.sort(1, descending=False)[1]
+            #freq = score.float().mean(0) / capsule_routing.shape[1]
+            
+            numel = capsule_routing.shape[1]*capsule_routing.shape[2]
+            mu = capsule_routing.sum(dim=(1,2))/numel
+            sigma_sqr = ((capsule_routing-mu.view(-1,1,1)) ** 2).sum(dim=(1,2)) / numel
+            activated_features = capsule_routing - capsule_routing * (capsule_routing < (mu+sigma_sqr.sqrt()).view(-1,1,1)).float()
+
+            numel = (activated_features > 0).sum((1,2)).float()
+            mu = activated_features.sum(dim=(1,2))/numel
+            #sigma_sqr = ((activated_features-mu.unsqueeze(-1)) ** 2).sum(-1) / numel
+            activated_features = activated_features - activated_features * (activated_features < mu.view(-1,1,1)).float()
+
+            #activated_features = activated_features - ( activated_features * (activated_features < mask*activated_features      (activated_features.mean()+activated_features.std())).float() )
+            activated_features = activated_features.sum(dim=-1)
+            freq = (activated_features / activated_features.sum(dim=-1, keepdim=True).clamp(1e-10)).mean(dim=0)
+    
+        """ Moving average """
+        if self.not_initialized:
+            batch = capsule_routing.shape[0]
+            features = capsule_routing.shape[1]
+            self.freq_ema = freq
+            self.target_max_freq /= features
+            self.target_min_freq /= features
+            self.boost_update_count = int(self.boost_update_count / batch)
+            self.ema_decay = self.ema_decay ** (1/self.boost_update_count)
+            self.not_initialized = False
+
+        self.freq_ema = self.ema_decay * self.freq_ema + (1 - self.ema_decay) * freq # output_dim
+
+        #if (self.freq_ema != self.freq_ema).sum().item() > 0:
+        #    print()
+
+        self.N += 1
+        if self.N == self.boost_update_count:
+            self.N = 0
+
+            if self.active:
+                
+                self.ramp_in = self.ramp_in-3/25 if self.ramp_in > 1 else self.ramp_in.new_tensor([1.])
+                old = self.boosting_weights.clone()
+
+                error_normalized = (self.freq_ema - self.target_max_freq) #/ self.target_max_freq
+                error_normalized = (error_normalized > 0).float() * error_normalized
+                correction = -error_normalized * self.down_boost_factor
+                
+                error_normalized = (-self.freq_ema + self.target_min_freq) #/ self.target_min_freq
+                error_normalized = (error_normalized > 0).float() * error_normalized
+                correction += error_normalized * self.up_boost_factor
+                
+                mean_compensation = 1. / ((self.boosting_weights < 1).float()*self.boosting_weights).mean().clamp(min=0.2)
+                
+                self.boosting_weights = self.boosting_weights + self.ramp_in * correction * self.boosting_weights * mean_compensation #.sqrt()
+                self.boosting_weights = self.boosting_weights.clamp(min=0.05, max=1)
+
+                
+                """                     
+                self.ramp_in = self.ramp_in-3/250 if self.ramp_in > 1 else self.ramp_in.new_tensor([1.])
+                old = self.boosting_weights.clone()
+                
+                error_normalized = (self.freq_ema - self.target_max_freq) / self.target_max_freq  #).clamp(min=0, max=2) # 1 equal to 100% above
+                self.down_error_integrated += error_normalized
+                mask = (error_normalized > 0).float()
+                self.down_error_integrated = (mask*self.down_error_integrated).clamp(max=1000.) # avoid wind-up
+                error_normalized *= mask
+                correction = -(error_normalized + self.down_error_integrated/3) * self.down_boost_factor
+    
+                error_normalized = (-self.freq_ema + self.target_min_freq) / self.target_min_freq  #).clamp(min=0, max=2) # 1 equal to 100% above
+                self.up_error_integrated += error_normalized
+                mask = (error_normalized > 0).float()
+                self.up_error_integrated = (mask*self.up_error_integrated).clamp(max=1000.) # avoid wind-up
+                error_normalized *= mask
+                correction += (error_normalized + self.up_error_integrated/3) * self.up_boost_factor
+                
+                correction *= self.boosting_weights.clamp(min=0.01).sqrt()
+                correction = (correction*100).int().float() / 100.
+                
+                self.boosting_weights = (self.boosting_weights + correction).clamp(min=0.01, max=1)
+                """
+
+            print ()
+            print ()
+            #print ('freq     :', *['%.2f' % i for i in freq.tolist()])
+            print ('freq_avg :', *['%.2f' % i for i in self.freq_ema.tolist()])
+            if self.active:
+                print ('boost    :', *['%.2f' % i for i in self.boosting_weights.tolist()])
+                change = self.boosting_weights - old
+                change = (change==0).float() + change
+                s = str(['%.2f' % i for i in change.tolist()])
+                s = s.replace("["," ").replace("'","").replace("]","").replace(",","").replace(" 0","+0").replace(" -","-").replace("0.00","    ").replace("1.00","    ")
+                print ('change   ', s)
+                #print ('Weights changed     :', (self.boosting_weights != old).sum().item())
+                print ('Active filters (>5%):', (self.freq_ema > 0.05/shp[1]).sum().item())
+
+
+        if not self.return_mask:
+            return 1.
+
+        
+        routing_mask = (ranks < self.sparsity*ranks.shape[1]).float()
+        routing_mask = routing_mask.unsqueeze(-1).expand(shp) #.view(shp[0:-2] + (1,1,1))
+        return routing_mask
+        
+        
 class MatrixRouting(nn.Module):
-    def __init__(self, output_dim, num_routing):
+    def __init__(self, output_dim, num_routing, activation=batchrenorm.Sigmoid(), sparse=None, stat=None):
         super(MatrixRouting, self).__init__()
         self.output_dim = output_dim
         self.num_routing = num_routing
         self.beta_v = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1,1))
+        self.sparse = sparse
+        self.activation = activation
+        #if isinstance(activation, batchrenorm.Sigmoid):
         self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
+        #else:
+        #    self.beta_a = 0
         
-    def forward(self, votes): # (b, Bkk, Cww, h)
-        if type(votes) is tuple:
-            """ the votes are pooled/reduced, so bias should be detached? """
-            votes = votes[0]
-        shp = votes.shape
+        #self.experimental = experimental
+        self.stat = stat
+        if stat is not None:
+            for _ in range(4):
+                self.stat.append(0.)
+        
+    def forward(self, x): # (b, Bkk, Cww, h)
+        #if type(votes) is tuple:
+        """ the votes are pooled/reduced, so bias should be detached? """
+        V = x[0]
+        shp = V.shape
 
         """ If previous was ConvVector2d """
         if len(shp) > 5: # batch, input_dim, output_dim, h, out_dim_x, out_dim_y
             vs = list(range(0, len(shp)))
-            v = votes.permute(vs[:3] + vs[4:] + [3]).contiguous()
-            v = v.view(shp[0], shp[1], -1, shp[3])
-            w = shp[-2]
-            shp = v.shape
-        else:
-            w = int(math.sqrt(shp[2] / self.output_dim))
-            v = votes
+            V = V.permute(vs[:3] + vs[4:] + [3]).contiguous()
+            V = V.view(shp[0], shp[1], -1, shp[3])
+            shp = V.shape
 
         b, Bkk, Cww, h = shp
+        a_ = x[1].view(b, Bkk, -1)
         
-        V = v[...,:h-1]
-        a_ = v[...,h-1:].squeeze(-1)
+        #V = v[...,:h-1]
+        #a_ = v[...,h-1:].squeeze(-1)
 
         # routing coefficient
         if V.is_cuda:
@@ -513,11 +728,12 @@ class MatrixRouting(nn.Module):
             R = Variable(torch.ones(shp[:3]), requires_grad=False) / self.output_dim
 
         for i in range(self.num_routing):
-            lambda_ = 0.01 * (1 - 0.95 ** (i+1))
+            #lambda_ = 0.01 * (1 - 0.95 ** (i+1))
+            #lambda_ = 1. * (1 - 0.5 ** (i+1))
             
             """ M-step: Compute an updated Gaussian model (μ, σ) """
             R = (R * a_).unsqueeze(-1)
-            sum_R = R.sum(1) + 0.0001
+            sum_R = R.sum(1) + eps
             mu = ((R * V).sum(1) / sum_R).unsqueeze(1)
             V_minus_mu_sqr = (V - mu) ** 2 + eps
             sigma_square = ((R * V_minus_mu_sqr).sum(1) / sum_R).unsqueeze(1) + eps
@@ -531,10 +747,38 @@ class MatrixRouting(nn.Module):
             Votes are routed by the learned weight self.W.
             """
             log_sigma = torch.log(sigma_square.sqrt()+eps)
-            cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h-1)) * sum_R.view(b, self.output_dim,-1,1)
-            a = torch.sigmoid(lambda_ * (self.beta_a - cost.sum(-1)))
-            a = a.view(b, Cww)
+            cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h)) * sum_R.view(b, self.output_dim,-1,1)
+            is_last_time = (i == (self.num_routing - 1))
+            
+            a = self.activation(self.beta_a - cost.sum(-1), i)
 
+            if self.sparse is not None:
+                #if self.sparse.active:
+                a_boost = self.sparse.boosting_weights.view(1,-1,1) * a.data
+                a = a - (a_boost < 0.5).float() * a
+                if is_last_time:
+                    if self.stat is not None:
+                        self.stat.append( log_sigma.std().item() )
+                        cost_sum = cost.sum(-1)
+                        self.stat.append( cost_sum.mean().item() )
+                        self.stat.append( cost_sum.std().item() )
+                        self.stat.append( a.std().item() )
+                    if self.training:
+                        a = self.sparse.update(sum_R.view(b, self.output_dim,-1)) * a
+                        #if self.L_fac.item() < 0:
+                        #    self.L_fac.data += 0.1
+
+                        if self.sparse.N == 0:
+                            bt99 = (a > 0.99).sum()
+                            bt8 = (a > 0.8).sum() - bt99
+                            mid = (a > 0.2).sum() - bt8 - bt99
+                            lt2 = (a > 0.01).sum() - bt8 - mid - bt99
+                            eq0 = (a == 0.).sum()
+                            lt01 = (a < 0.01).sum() - eq0
+                            print('Activation distribu :', eq0.item(), '|0|', lt01.item(), '|0.01|', lt2.item(), '|0.2|', mid.item(), '|0.8|', bt8.item(), '|0.99|', bt99.item())
+                            #if self.experimental==1:
+                            #    print('Lfac =', self.L_fac.mean().item())
+            
             """ E-step: Recompute the assignment probabilities R(ij) based on the new Gaussian model and the new a(j) """
             if i != self.num_routing - 1:
                 """ p_j_h is the probability of v_ij_h belonging to the capsule j’s Gaussian model """
@@ -542,12 +786,13 @@ class MatrixRouting(nn.Module):
                 p_j_h = torch.exp(ln_p_j_h)
 
                 """ Calculate normalized Assignment Probabilities (batch_size, input_dim, output_dim)"""
-                ap = a[:,None,:] * p_j_h.sum(-1)
+                ap = a.view(b, 1, Cww) * p_j_h.sum(-1)
                 R = Variable(ap / (torch.sum(ap, 2, keepdim=True) + eps) + eps, requires_grad=False) # detaches from graph
 
-        mu_a = torch.cat([mu.view((b, self.output_dim) + votes.shape[4:] + (-1,)), a.view((b, self.output_dim) + votes.shape[4:] + (1,))], dim=-1) # b, C, w, w, h
-
-        return mu_a, None #R.view((b, Bkk, self.output_dim) + votes.shape[4:]), votes
+        #mask = (a.data > 0).float()
+        #mu = mask.view(b, 1, -1, 1) * mu
+        return mu.view((b, self.output_dim) + x[0].shape[4:] + (-1,)), a.view((b, self.output_dim) + x[0].shape[4:] + (1,)), sum_R.view((b, self.output_dim) + x[0].shape[4:])
+        #mu_a = torch.cat([mu.view((b, self.output_dim) + votes.shape[4:] + (-1,)), a.view((b, self.output_dim) + votes.shape[4:] + (1,))], dim=-1) # b, C, w, w, h
 
 
 class MaxPool(nn.Module):
@@ -595,12 +840,9 @@ class MaxPool(nn.Module):
         idx = torch.randperm(r_sort_id.shape[-1])
         r_sort_id = r_sort_id[:,:,:,idx]
 
-        #ids_combined = torch.cat([a_sort_id[:,None,:,:].repeat(1,input_dim,1,1), r_sort_id], dim=3)
         ids_combined_h = r_sort_id[:,:,:,None,:].repeat(1,1,1,h,1) # batch, input_dim, output_dim, h, dim_x*dim_y
 
         votes = votes.view(b,input_dim,output_dim,h,-1).gather(4, ids_combined_h).unsqueeze(-1)
-        #idx = torch.randperm(votes.shape[4])
-        #votes = votes[:,:,:,:,idx].unsqueeze(-1)        # batch, input_dim, output_dim, h, dim_x, dim_y
 
         return votes, None # is None, to force bias detach
 
@@ -613,9 +855,7 @@ class MaxActPool(nn.Module):
         self.output_ids = output_ids
         
     def forward(self, x):
-        #x, _, _ = x
         b, output_dim, dim_x, dim_y, h = x.shape
-        #x = x.view(b, output_dim, -1, h)
         a = x[:,:,:,:,h-1]   # b, output_dim, w_x, w_y
 
         a, sort_id_mp = self.maxpool(a)

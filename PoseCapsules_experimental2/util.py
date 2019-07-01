@@ -29,69 +29,159 @@ from collections import OrderedDict
 #meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
 #setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
 
+def getSigmoidParams(criteria=9/10):
+    dist = (torch.linspace(0,1, steps=1000) > criteria).float()
+    mu_ref = dist.mean()
+    var_ref = dist.std()**2
+    kaj = torch.linspace(-1,1)
+    kaj = kaj / kaj.std()
+    A = 1
+    B = 1
+    while (True):
+        c = 0
+        mu = torch.sigmoid(-A + B*kaj).mean()
+        if mu > mu_ref:
+            A += 0.1
+            c += 1
+        var = torch.sigmoid(-A + B*kaj).std()**2
+        if var < var_ref:
+            B += 0.1
+            c += 1
+        if c == 0:
+            break
+    return A, B
+
+
 class statBase():
     def __init__(self, args):
         self.args = args
         self.lossAvg = tnt.meter.AverageValueMeter()
+        #self.lossSparseMu = tnt.meter.AverageValueMeter()
+        #self.lossSparseVar = tnt.meter.AverageValueMeter()
         self.train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
         self.test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
         self.recon_sum = 0
+        self.rout_id = 1
         if not self.args.disable_recon:
             self.reconLossAvg = tnt.meter.AverageValueMeter()
             self.ground_truth_logger_left = VisdomLogger('image', opts={'title': 'Ground Truth, left'}, env='PoseCapsules')
             self.reconstruction_logger_left = VisdomLogger('image', opts={'title': 'Reconstruction, left'}, env='PoseCapsules')
+        if self.args.regularize:
+            self.regularizeLossAvg = tnt.meter.AverageValueMeter()
+            self.logsigAvg = tnt.meter.AverageValueMeter()
+            self.costmeanAvg = tnt.meter.AverageValueMeter()
+            self.costAvg = tnt.meter.AverageValueMeter()
+            self.aAvg = tnt.meter.AverageValueMeter()
         
     def reset(self):
         self.lossAvg.reset()
         if not self.args.disable_recon:
             self.reconLossAvg.reset()
+        if self.args.regularize:
+            self.regularizeLossAvg.reset()
+            self.logsigAvg.reset()
+            self.costmeanAvg.reset()
+            self.costAvg.reset()
+            self.aAvg.reset()
         
-    def log(self, pbar, output, labels, dict = OrderedDict()):
-        dict['loss'] = self.lossAvg.value()[0]
+    def log(self, pbar, output, labels, dict = OrderedDict(), stat=None):
+        if not self.args.disable_loss:
+            dict['loss'] = self.lossAvg.value()[0]
+        if stat is not None:
+            self.logsigAvg.add(stat[-self.rout_id*4 + 0])
+            self.costmeanAvg.add(stat[-self.rout_id*4 + 1])
+            self.costAvg.add(stat[-self.rout_id*4 + 2])
+            self.aAvg.add(stat[-self.rout_id*4 + 3])
+            stat.clear()
+            dict['logsig'] = self.logsigAvg.value()[0]
+            dict['costmean'] = self.costmeanAvg.value()[0]
+            dict['cost'] = self.costAvg.value()[0]
+            dict['a'] = self.aAvg.value()[0]
+        #dict['mloss'] = self.lossSparseMu.value()[0]
+        #dict['vloss'] = self.lossSparseVar.value()[0]
         if not self.args.disable_recon:
             #pbar.set_postfix(loss=self.lossAvg.value()[0], refresh=False)
             #else:
-            dict['rloss'] = self.reconLossAvg.value()[0]
+            dict['reconloss'] = self.reconLossAvg.value()[0]
             dict['rsum'] = self.recon_sum
             #pbar.set_postfix(loss=self.lossAvg.value()[0], rloss=self.reconLossAvg.value()[0], rsum=self.recon_sum, refresh=False)
+        if self.args.regularize:
+            dict['reguloss'] = self.regularizeLossAvg.value()[0]
+
         pbar.set_postfix(dict, refresh=False)
 
     def endTrainLog(self, epoch, groundtruth_image=None, recon_image=None):
-        self.train_loss = self.lossAvg.value()[0]
+        #self.train_loss = self.lossAvg.value()[0]
+        if not self.args.disable_loss:
+            self.train_loss_logger.log(epoch, self.lossAvg.value()[0], name='loss')
+            with open("train.log", "a") as myfile:
+                myfile.write(str(self.lossAvg.value()[0]) + '\n')
         if not self.args.disable_recon:
             if groundtruth_image is not None:
                 self.ground_truth_logger_left.log(make_grid(groundtruth_image, nrow=int(self.args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
             if recon_image is not None:
                 self.reconstruction_logger_left.log(make_grid(recon_image.data, nrow=int(self.args.batch_size ** 0.5), normalize=True, range=(0, 1)).cpu().numpy())
-            self.train_recon_loss = self.reconLossAvg.value()[0]
+            #self.train_recon_loss = self.reconLossAvg.value()[0]
+            self.train_loss_logger.log(epoch, self.reconLossAvg.value()[0], name='recon')
+        #if self.args.regularize:
+        #    self.train_regularize_loss = self.regularizeLossAvg.value()[0]
             
     def endTestLog(self, epoch):
         #loss = self.lossAvg.value()[0]
-        self.train_loss_logger.log(epoch, self.train_loss, name='loss')
-        self.test_loss_logger.log(epoch, self.lossAvg.value()[0], name='loss')
+        if not self.args.disable_loss:
+            self.test_loss_logger.log(epoch, self.lossAvg.value()[0], name='loss')
+            with open("test.log", "a") as myfile:
+                myfile.write(str(self.lossAvg.value()[0]) + '\n')
         if not self.args.disable_recon:
-            self.train_loss_logger.log(epoch, self.train_recon_loss, name='recon')
             self.test_loss_logger.log(epoch, self.reconLossAvg.value()[0], name='recon')
-        with open("loss.log", "a") as myfile:
-            myfile.write(str(self.train_loss) + '\n')
 
+    def load_loss(self, history_count):
+        if os.path.isfile('train.log'):
+            with open("train.log", "r") as lossfile:
+                loss_list = []
+                for loss in lossfile:
+                    loss_list.append(loss)
+                while len(loss_list) > history_count:
+                    loss_list.pop(0)
+                epoch = -len(loss_list)
+                for loss in loss_list:
+                    self.train_loss_logger.log(epoch, float(loss), name='loss')
+                    epoch += 1
+        if os.path.isfile('test.log'):
+            with open("test.log", "r") as lossfile:
+                loss_list = []
+                for loss in lossfile:
+                    loss_list.append(loss)
+                while len(loss_list) > history_count:
+                    loss_list.pop(0)
+                epoch = -len(loss_list)
+                for loss in loss_list:
+                    self.test_loss_logger.log(epoch, float(loss), name='loss')
+                    epoch += 1
 
 class statClassification(statBase):
     def __init__(self, args):
         super(statClassification, self).__init__(args)
         self.meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
+        self.accuracy_logger = VisdomPlotLogger('line', opts={'title': 'accuracy'}, env='PoseCapsules')
 
     def reset(self):
         super(statClassification, self).reset()
         self.meter_accuracy.reset()
 
-    def log(self, pbar, output, labels):
-        super(statClassification, self).log(pbar, output, labels)
+    def log(self, pbar, output, labels, stat=None):
         self.meter_accuracy.add(output.squeeze()[:,:,-1:].squeeze().data, labels.data)
-        pbar.set_postfix(acc=self.meter_accuracy.value()[0])
+        dict = OrderedDict()
+        dict['acc'] = self.meter_accuracy.value()[0]
+        super(statClassification, self).log(pbar, output, labels, dict, stat)
+
+    def endTrainLog(self, epoch, groundtruth_image=None, recon_image=None):
+        super(statClassification, self).endTrainLog(epoch, groundtruth_image, recon_image)
+        self.accuracy_logger.log(epoch, self.meter_accuracy.value()[0], name='train')
 
     def endTestLog(self, epoch):
         super(statClassification, self).endTestLog(epoch)
+        self.accuracy_logger.log(epoch, self.meter_accuracy.value()[0], name='test')
         print ("Test accuracy: ", self.meter_accuracy.value()[0])
 
 
@@ -105,16 +195,35 @@ class statJoints(statBase):
         super(statJoints, self).reset()
         self.jointErrAvg.reset()
 
-    def log(self, pbar, output, labels):
-        err = (output[:,:4,0,0,:-1].data - labels[:,:4,:]) #.abs().mean().item()
-        err = err.view(err.shape[0], err.shape[1],-1, 3)
-        sc = torch.tensor(self.scale, device=output.device)[None, None, None, :].expand(err.shape)
+    def log(self, pbar, output, labels, stat=None):
+        #err = (output[:,:4,0,0,:-1].data - labels[:,:4,:]) #.abs().mean().item()
+        #err = err.view(err.shape[0], err.shape[1],-1, 3)
+        shp = (labels.shape[0], labels.shape[1], -1, 3)
+        
+        labels_abs = labels.view(shp)
+        output_abs = output.data[...,:-1].view(shp)
+        
+        """
+        l_labels = [labels_abs[:,:,0,:]]
+        l_output = [output_abs[:,:,0,:]]
+        for i in range(4):
+            l_labels.append( l_labels[i] + labels_abs[:,:,i+1,:] )
+            l_output.append( l_output[i] + output_abs[:,:,i+1,:] )
+        labels_abs = torch.stack(l_labels, dim=2)
+        output_abs = torch.stack(l_output, dim=2)
+        """
+
+        #err = (output[...,:-1].data.view(shp)[:,:,1:,:] - labels.view(shp)[:,:,1:,:])
+        err = output_abs - labels_abs
+        sc = torch.from_numpy(self.scale).float().cuda()[None,None,None,:].expand(err.shape)   #torch.tensor([self.scale], device=output.device)[None, None, None, :].expand(err.shape)
         err = err * sc
-        mean = err.norm(dim=3).mean().item()
+        mean = err[:,:,1:,:].norm(dim=3).mean().item()
+        mean1 = err[:,:,0,:].norm(dim=2).mean().item()
+        mean = (20*mean + mean1)/21
         self.jointErrAvg.add(mean)
         dict = OrderedDict()
         dict['jointErr'] = self.jointErrAvg.value()[0]
-        super(statJoints, self).log(pbar, output, labels, dict)
+        super(statJoints, self).log(pbar, output, labels, dict, stat)
 
 class statTransmatrix(statBase):
     def __init__(self, args):
@@ -127,7 +236,7 @@ class statTransmatrix(statBase):
         self.angleErrAvg.reset()
         self.xyzErrAvg.reset()
 
-    def log(self, pbar, output, labels):
+    def log(self, pbar, output, labels, stat=None):
         angleErr, xyzErr = get_error(output[:,0,0,0,:-1].data.cpu(), labels.data.cpu())
         self.angleErrAvg.add(angleErr)
         self.xyzErrAvg.add(xyzErr)
@@ -518,20 +627,6 @@ class myTest(data.Dataset):
         return index, img, target
 
 
-def load_loss(train_loss_logger, history_count):
-    epoch_offset = 0
-    if os.path.isfile('loss.log'):
-        with open("loss.log", "r") as lossfile:
-            loss_list = []
-            for loss in lossfile:
-                loss_list.append(loss)
-            while len(loss_list) > history_count:
-                loss_list.pop(0)
-            for loss in loss_list:
-                train_loss_logger.log(epoch_offset, float(loss))
-                epoch_offset += 1
-    return epoch_offset
-
 """
 Loading weights of previously saved states and optimizer state
 """
@@ -550,7 +645,13 @@ def load_pretrained(model, optimizer, model_number, forced_lr, is_cuda, path="./
         
     optim_name = "{}optim.pth".format(path)
     
-    model.load_state_dict( torch.load(model_name) )
+    pretrained_dict = torch.load(model_name)
+    model_dict = model.state_dict()
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+    model_dict.update(pretrained_dict)
+    model.load_state_dict(model_dict)
+    
+    #model.load_state_dict( torch.load(model_name) )
     
     if optimizer is not None and os.path.isfile(optim_name):
         optimizer.load_state_dict( torch.load(optim_name) )

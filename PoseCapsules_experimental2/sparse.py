@@ -7,20 +7,56 @@ Created on Mar 22, 2019
 import torch
 import torch.nn as nn
 
+"""
+def default_hparams():
+    # Builds an HParam object with default hyperparameters.
+    return tf.contrib.training.HParams(
+        decay_rate=0.96,
+        decay_steps=2000,
+        leaky=False,
+        learning_rate=0.001,
+        # loss_type=[sigmoid, softmax, margin]
+        loss_type='margin',
+        # mask_type=[none, label, norm, routing, weighted-routing]
+        mask_type='weighted-routing',
+        balance_factor=0.005,
+        num_prime_capsules=32,
+        num_latent_capsules=16,
+        num_latent_atoms=16,
+        padding='VALID',
+        remake=True,
+        routing=3,
+        verbose=True,
+        unsupervised=True,
+        ema_decay=0.99,
+        boost_step=50,
+        boost_factor=0.1,
+        target_min_freq=0.03,
+        target_max_freq=0.12,
+        boosting=True
+    )
+"""
+    
 class SparseCoding(nn.Module):
 
-    def __init__(self, active=True, ema_decay=0.99, steepness_factor=12, clip_threshold=0.01, target_min_boost=0.96, target_max_boost=3.84, boost_factor=0.1, boost_update_count=50):
+    def __init__(self, active=True, ema_decay=0.99, steepness_factor=12, clip_threshold=0., target_min_boost=0.96, target_max_boost=3.84, boost_factor=0.1, boost_update_count=50):
         super(SparseCoding, self).__init__()
         self.active = active
         self.ema_decay=ema_decay
         self.steepness_factor=steepness_factor
-        self.clip_threshold=clip_threshold
-        self.target_min_freq=target_min_boost
-        self.target_max_freq=target_max_boost
+        self.clip_threshold=clip_threshold    # Is downscaled in initialization
+        self.target_min_freq=target_min_boost # Is downscaled in initialization
+        self.target_max_freq=target_max_boost # Is downscaled in initialization
         self.boost_factor=boost_factor
         self.boost_update_count = boost_update_count
         self.N = 0
+        #self.lossFunc = nn.MSELoss(reduction='sum')
+        #self.loss = None
         self.not_initialized = True
+
+        #target_min_freq=0.03,
+        #target_max_freq=0.12,
+
 
     """
     batch, dim, dim, input_dim (prim_capsules), output_dim
@@ -52,12 +88,12 @@ class SparseCoding(nn.Module):
         """
 
         if self.not_initialized:
-            self.register_buffer('boosting_weights', torch.ones(x[1].shape[2], device=x[0].device))
+            self.register_buffer('boosting_weights', torch.ones(x[1].shape[1], device=x[0].device))
     
         """ Calculate routing coefficients """
         # route: batch_size, input_dim, output_dim, dim_x, dim_y
-        shp = x[1].shape
-        capsule_routing = x[1].view(shp[0]*shp[1],shp[2],-1)   #.max(dim=1)[0]
+        shp = x[0].shape
+        capsule_routing = x[1].view(shp[:2]+(-1,)) #.view(shp[0]*shp[1],shp[2],-1)   #.max(dim=1)[0]
         capsule_routing = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
     
     
@@ -68,25 +104,35 @@ class SparseCoding(nn.Module):
         order = capsule_routing.sort(1, descending=True)[1]
         ranks = (-order).sort(1, descending=True)[1]
     
-        """ Winning frequency """
-        transposed_ranks = ranks.transpose(1,0)  # output_dim, batch_size*input_dim
-        win_counts = (transposed_ranks == 0).sum(dim=1) # output_dim
-        freq = win_counts.float() / transposed_ranks.shape[1] # output_dim
+        if self.training:
+            """ Winning frequency """
+            transposed_ranks = ranks.transpose(1,0)  # output_dim, batch_size*input_dim
+            win_counts = (transposed_ranks == 0).sum(dim=1) # output_dim
+            freq = win_counts.float() / transposed_ranks.shape[1] # output_dim
+        
+            """ Moving average """
+            if self.not_initialized:
+                self.register_buffer('freq_ema', freq)
+                #self.softmax = nn.Softmax(dim=0)
+                self.target_max_freq /= ranks.shape[1]
+                self.target_min_freq /= ranks.shape[1]
+                #self.clip_threshold /= ranks.shape[1]
+                self.not_initialized = False
     
-        """ Moving average """
-        if self.not_initialized:
-            self.register_buffer('freq_ema', freq)
-            self.softmax = nn.Softmax(dim=0)
-            self.target_max_freq /= ranks.shape[1]
-            self.target_min_freq /= ranks.shape[1]
-            self.not_initialized = False
-        else:
             self.freq_ema = self.ema_decay * self.freq_ema + (1 - self.ema_decay) * freq # output_dim
+    
+            self.N += 1
+            if self.N == self.boost_update_count:
+                self.N = 0
+                
+                self.boosting_weights += (self.freq_ema < self.target_min_freq).float() * self.boost_factor
+                self.boosting_weights -= (self.freq_ema > self.target_max_freq).float() * self.boost_factor
+                self.boosting_weights = self.boosting_weights.clamp(max=1.0)
 
         if not self.active:
-            return x[2]
+            return x[0], None
     
-        # Normalise the rankings
+        # Normalise the rankings, so max value of an element is 1
         normalised_ranks = ranks.float() / (ranks.shape[1] - 1) # batch_size*input_dim, output_dim
     
         routing_mask = torch.exp(-self.steepness_factor * normalised_ranks) # batch_size*input_dim, output_dim
@@ -94,22 +140,22 @@ class SparseCoding(nn.Module):
         # Set values < 0.1 to zero
         routing_mask = routing_mask - ( routing_mask * (routing_mask < self.clip_threshold).float() )
 
-        self.N += 1
-        if self.N == self.boost_update_count:
-            self.N = 0
-            #step = self.softmax(self.freq_ema) - 1/ranks.shape[1]
-            #self.boosting_weights -= step * self.boost_factor #* self.boosting_weights
-            #self.boosting_weights = self.boosting_weights.clamp(min=0.01, max=1.0)
-            
-            #mask = self.freq_ema < 1e-8
-            #mask *= 10
-            #mask += 1
-            #self.boosting_weights *= mask.float()
-            
-            self.boosting_weights += (self.freq_ema < self.target_min_freq).float() * self.boost_factor
-            self.boosting_weights -= (self.freq_ema > self.target_max_freq).float() * self.boost_factor
-            self.boosting_weights = self.boosting_weights.clamp(max=1.0)
 
-        votes = routing_mask.view(shp[0], shp[1], shp[2], 1, 1, 1).expand_as(x[2]) * x[2]
-        return votes, None # is None, to force bias detach
+        routing_mask = torch.cat([torch.ones((shp[:4]) + (shp[-1]-1,), device=x[0].device),
+                                  routing_mask[:,:,None,None,None].repeat(1,1,shp[2],shp[3],1)], dim=-1)
+        
+        masked_x = x[0] * routing_mask
+
+        #shp[3] = shp[3] - 1
+        #ones = torch.ones(shp, device=x[2].device)
+        #shp[3] = 1
+        #routing_mask = routing_mask.view(shp[0], shp[1], shp[2], 1, 1, 1).expand(shp).squeeze(3)
+        #votes_act = x[2].data[:,:,:,-1,:,:] * routing_mask
+        
+        #self.loss = self.lossFunc(x[2][:,:,:,-1,:,:], votes_act) / (shp[1]*shp[2]*shp[4]*shp[5])
+        
+        #routing_mask = torch.cat([ones, routing_mask.view(shp[0], shp[1], shp[2], 1, 1, 1).expand(shp)], dim=3)
+        #votes = routing_mask * x[2]
+        #votes = routing_mask.view(shp[0], shp[1], shp[2], 1, 1, 1).expand_as(x[2]) * x[2]
+        return masked_x, None #votes, None # is None, to force bias detach
         #return routing_mask[:,:,None,None,None].expand_as(x[0]) * x[0]

@@ -11,16 +11,50 @@ import math
 
 
 class MaskLayer(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, sz=0, one_hot=False):
         super(MaskLayer, self).__init__()
-        self.num_classes = num_classes
+        self.sz = sz
+        self.one_hot = one_hot
 
     def forward(self, x):
+        if type(x) is tuple:
+            y = x[1]
+            mask = y.data
+            x = x[0]
+            b = x.shape[0]
+        else:
+            b = x.shape[0]
+            y = x[...,-1:]
+            mask = y.data
+            x = x[...,:-1]
+
+        if self.sz == 0:
+            self.sz = x.shape[1:]
+
+        
+        if self.one_hot:
+            _, mask = mask.squeeze().max(dim=-1)
+            mask = torch.eye(x.shape[1]).cuda().index_select(dim=0, index=mask)
+            y = (mask.view(-1) * y.view(-1)).view(y.shape)
+        else:
+            mask = (mask > 0).float().unsqueeze(-1)
+
+        x = mask.view(-1,1) * x.view(-1, x.shape[-1])
+
+        if self.sz == -1:
+            x = torch.cat([x, y.view(-1,1)], dim=1)
+            return x.view(b, -1)
+        return x.view((b,) + self.sz), y
+        
+        """
+        return x.squeeze().view(x.size(0), -1)
+    
         x = x.squeeze()
         _, y = x[:,:,-1:].max(dim=1)
         y = y.squeeze()
         y = Variable(torch.eye(self.num_classes, device=x.device)).index_select(dim=0, index=y) # convert to one hot
         return (x[:,:,:-1] * y[:, :, None]).view(x.size(0), -1)
+        """
 
 
 class StoreLayer(nn.Module):
@@ -31,16 +65,16 @@ class StoreLayer(nn.Module):
         self.do_clone = do_clone
         
     def forward(self, x):
-        if type(x) is tuple:
-            x = x[0]
+        #if type(x) is tuple:
+        #    x = x[0]
         if self.do_clone:
-            self.container[0] = x.clone()
+            self.container[0] = (x[0].clone(), x[1].clone())
         else:
             self.container[0] = x
-        shp = x.shape
-        if len(shp) == 4:
-            """ If previous was Conv2d """
-            self.container[0] = self.container[0].permute(0,2,3,1).unsqueeze(1)
+        #shp = x.shape
+        #if len(shp) == 4:
+        #    """ If previous was Conv2d """
+        #    self.container[0] = self.container[0].permute(0,2,3,1).unsqueeze(1)
         return x
 
 class SplitStereoReturnLeftLayer(nn.Module):
@@ -107,13 +141,6 @@ class ConcatLayer(nn.Module):
             else:
                 self.container[0] = y
 
-        #if (type(x) is tuple) and (type(self.container[0]) is tuple):
-        #if self.include_routes:
-        #    route = torch.cat([self.container[0][1], x[1]], 1)
-        #    y = (y_store, route)
-        #elif type(x) is tuple:
-        #    y = (y_store, x[1])
-
         return y
 
 class ActivatePathway(nn.Module):
@@ -131,20 +158,27 @@ class BNLayer(nn.Module):
         self.not_initialized = True
 
     def forward(self, x):
-        shp = x.shape
-        xx = x[:,:,:,:shp[3]-1,...].contiguous().view((shp[0]*shp[1], shp[2]*(shp[3]-1)) + shp[4:])
-        yy = x[:,:,:,shp[3]-1:,...]
+        shp = x[0].shape
+        xx = x[0].view((shp[0]*shp[1], shp[2]*shp[3]) + shp[4:])
+        #yy = x[1]
         if self.not_initialized:
             BatchNormFunc = getattr(nn,self.func)
             self.batchnorm = BatchNormFunc(num_features=xx.shape[1])
-            if x.is_cuda:
+            if xx.is_cuda:
                 self.batchnorm.cuda()
             self.not_initialized = False
-        xx = self.batchnorm(xx).view(shp[:3] + (shp[3]-1,) + shp[4:])
+        xx = self.batchnorm(xx).view(shp[:3] + (shp[3],) + shp[4:])
         xx = torch.tanh(xx)
-        yy = torch.sigmoid(yy)
-        x = torch.cat([xx,yy], dim=3)
-        return x
+        yy = torch.sigmoid(x[1])
+        #x = torch.cat([xx,yy], dim=3)
+        return xx, yy
+
+class CatLayer(nn.Module):
+    def __init__(self):
+        super(CatLayer, self).__init__()
+
+    def forward(self, x):
+        return torch.cat([x[0], x[1]], dim=-1)
 
 class SigmoidLayer(nn.Module):
     def __init__(self, begin=-1):
@@ -192,7 +226,6 @@ class UpsampleLayer(nn.Module):
             x_new = torch.cat([x[:,:,:h,:,:], torch.zeros(shp, device=x.device), x[:,:,h:,:,:]], dim=2)
             return x_new
         h = shp[-1]
-        #dim = int(math.sqrt(h))
         shp[-1] = self.new_h - h
         
         if self.pos_embed:
