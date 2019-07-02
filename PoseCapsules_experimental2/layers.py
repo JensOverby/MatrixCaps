@@ -684,13 +684,15 @@ class SparseCoding(nn.Module):
         
         
 class MatrixRouting(nn.Module):
-    def __init__(self, output_dim, num_routing, activation=batchrenorm.Sigmoid(), sparse=None, stat=None):
+    def __init__(self, output_dim, num_routing, batchnorm=None, sparse=None, stat=None):
         super(MatrixRouting, self).__init__()
         self.output_dim = output_dim
         self.num_routing = num_routing
         self.beta_v = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1,1))
         self.sparse = sparse
-        self.activation = activation
+        self.batchnorm = batchnorm
+        self.sigmoid = nn.Sigmoid()
+
         #if isinstance(activation, batchrenorm.Sigmoid):
         self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
         #else:
@@ -728,6 +730,7 @@ class MatrixRouting(nn.Module):
             R = Variable(torch.ones(shp[:3]), requires_grad=False) / self.output_dim
 
         for i in range(self.num_routing):
+            lambda_ = 1 - 0.95 ** (i+1)
             #lambda_ = 0.01 * (1 - 0.95 ** (i+1))
             #lambda_ = 1. * (1 - 0.5 ** (i+1))
             
@@ -749,22 +752,34 @@ class MatrixRouting(nn.Module):
             log_sigma = torch.log(sigma_square.sqrt()+eps)
             cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h)) * sum_R.view(b, self.output_dim,-1,1)
             is_last_time = (i == (self.num_routing - 1))
-            
-            a = self.activation(self.beta_a - cost.sum(-1), i)
 
-            if self.sparse is not None:
-                #if self.sparse.active:
+            if self.sparse is None:
+                a = self.sigmoid(lambda_*(self.beta_a - cost.sum(-1)))
+            else:
+                a = self.batchnorm(self.beta_a - cost.sum(-1), i)
+                a = self.sigmoid(lambda_*a)
                 a_boost = self.sparse.boosting_weights.view(1,-1,1) * a.data
                 a = a - (a_boost < 0.5).float() * a
+
                 if is_last_time:
                     if self.stat is not None:
                         self.stat.append( log_sigma.std().item() )
                         cost_sum = cost.sum(-1)
                         self.stat.append( cost_sum.mean().item() )
                         self.stat.append( cost_sum.std().item() )
-                        self.stat.append( a.std().item() )
+                        
+                        mask_a = a>0
+                        numel_a = mask_a.sum()
+                        if numel_a.item() > 0:
+                            mean_a = a.sum()/numel_a
+                            sigma_a = mask_a.float() * (a - mean_a) ** 2
+                            sigma_a = (sigma_a.sum()/numel_a).sqrt()
+                        else:
+                            sigma_a = numel_a.float()
+                        
+                        self.stat.append( sigma_a.item() )
                     if self.training:
-                        a = self.sparse.update(sum_R.view(b, self.output_dim,-1)) * a
+                        self.sparse.update(a) #sum_R.view(b, self.output_dim,-1)) * a
                         #if self.L_fac.item() < 0:
                         #    self.L_fac.data += 0.1
 

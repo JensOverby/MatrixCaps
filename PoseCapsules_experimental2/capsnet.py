@@ -335,27 +335,27 @@ class CapsNet(nn.Module):
 
             layer_list['prim2'] = layers.PrimMatrix2d(output_dim=C, h=h, kernel_size=9, stride=2, padding=1, bias=False, advanced=True) # -> 23
             layer_list['bnn2'] = layers2.BNLayer()
-            route2 = layers.MatrixRouting(output_dim=C, num_routing=3, activation=af.NormedActivation(C, momentum=0.1*(args.batch_size/20), update_interval=3,
-                                            activation=af.Sigmoid()), sparse=layers.SparseCoding(C, type='lifetime',
-                                            target_max_boost=1.5, return_mask=False, active=True), stat=stat)
+            route2 = layers.MatrixRouting(output_dim=C, num_routing=3, batchnorm=af.BatchRenorm(num_features=C, update_interval=3, momentum=0.1*(args.batch_size/20)),
+                                            sparse=layers.SparseCoding(C, type='lifetime',
+                                            target_max_boost=2., return_mask=False, active=True), stat=stat)
             #route2 = layers.MatrixRouting(output_dim=C, num_routing=3, experimental=True, sparse=layers.SparseCoding(C, type='population', down_boost_factor=0.5, up_boost_factor=0.05, target_max_boost=0.6, target_min_boost=0.47, return_mask=False, active=True), stat=stat)
             #self.routing_list.append(route2)
             layer_list['route2'] = route2
             
             layer_list['prim2a'] = layers.PrimMatrix2d(output_dim=D, h=h, kernel_size=7, stride=2, padding=0, bias=False, advanced=True) # -> 9
             layer_list['bnn2a'] = layers2.BNLayer()
-            route2a = layers.MatrixRouting(output_dim=D, num_routing=3, activation=af.NormedActivation(D, momentum=0.1*(args.batch_size/20), update_interval=3,
-                                            activation=af.Sigmoid()), sparse=layers.SparseCoding(D, type='lifetime',
-                                            target_max_boost=1.5, return_mask=False, active=True), stat=stat)
+            route2a = layers.MatrixRouting(output_dim=D, num_routing=3, batchnorm=af.BatchRenorm(num_features=D, update_interval=3, momentum=0.1*(args.batch_size/20)),
+                                            sparse=layers.SparseCoding(D, type='lifetime',
+                                            target_max_boost=2., return_mask=False, active=True), stat=stat)
             #route2a = layers.MatrixRouting(output_dim=C, num_routing=3, experimental=True, sparse=layers.SparseCoding(C, type='population', down_boost_factor=0.5, up_boost_factor=0.05, target_max_boost=0.6, target_min_boost=0.47, return_mask=False, active=True), stat=stat)
             #self.routing_list.append(route2a)
             layer_list['route2a'] = route2a
             #0.996
             layer_list['prim3'] = layers.PrimMatrix2d(output_dim=E, h=h, kernel_size=5, stride=1, padding=0, bias=False, advanced=True) # -> 5
             layer_list['bnn3'] = layers2.BNLayer()
-            route3 = layers.MatrixRouting(output_dim=E, num_routing=3, activation=af.NormedActivation(E, momentum=0.1*(args.batch_size/20), update_interval=3,
-                                            activation=af.Sigmoid()), sparse=layers.SparseCoding(E, type='lifetime',
-                                            target_max_boost=1.5, return_mask=False, active=True), stat=stat)
+            route3 = layers.MatrixRouting(output_dim=E, num_routing=3, batchnorm=af.BatchRenorm(num_features=E, update_interval=3, momentum=0.1*(args.batch_size/20)),
+                                            sparse=layers.SparseCoding(E, type='lifetime',
+                                            target_max_boost=2., return_mask=False, active=True), stat=stat)
             #route3 = layers.MatrixRouting(output_dim=D, num_routing=3, experimental=True, sigmoid_offset=0., sparse=layers.SparseCoding(D, type='population', down_boost_factor=1., up_boost_factor=0.1, target_max_boost=0.6, target_min_boost=0.47, return_mask=False), stat=stat)
             #self.routing_list.append(route3)
             layer_list['route3'] = route3
