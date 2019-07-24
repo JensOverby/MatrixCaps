@@ -156,8 +156,6 @@ if __name__ == '__main__':
             args.recon_factor = 0.005
         model.recon_factor = nn.Parameter(torch.tensor(args.recon_factor, device=model.recon_factor.device), requires_grad=False)
         
-    #mu_factor = 0.4
-    #var_factor = 1e-5 #1/25550
     dff = 4.
 
     """
@@ -219,39 +217,6 @@ if __name__ == '__main__':
                     reguloss = model.regularize_factor * reguloss
                     logger.regularizeLossAvg.add(reguloss.data.cpu().item()/args.batch_size)
                     loss = reguloss + loss
-
-                #loss += model.capsules.sparse.loss * 0.01
-
-                """
-                mu_loss = 0
-                var_loss = 0
-                mu_numel = 0
-                var_numel = 0
-                for module, mu_ref, var_ref in model.route_list:
-                    numel = module.a.numel()
-                    mu = module.a.mean()
-                    var = ((module.a - mu) ** 2).sum() / numel
-                    #sparse_loss = (abs(mu - 0.5) + 2.*abs(var - 0.1)) * numel + sparse_loss
-
-                    mu_error = mu - mu_ref
-                    if mu_error > 0:
-                        mu_loss = mu_error * numel + mu_loss
-                        mu_numel += numel
-
-                    var_error = var - var_ref
-                    if var_error < 0:
-                        var_loss = -var_error * numel + var_loss
-                        var_numel += numel
-                if mu_numel > 0:
-                    mu_loss = mu_factor * mu_loss / mu_numel
-                    logger.lossSparseMu.add(mu_loss.data.cpu().item())
-                    loss = mu_loss + loss
-                if var_numel > 0:
-                    var_loss = var_factor * var_loss / var_numel
-                    logger.lossSparseVar.add(var_loss.data.cpu().item())
-                    loss = var_loss + loss
-                """
-
 
                 if not args.disable_recon:
                     i_imgs = imgs

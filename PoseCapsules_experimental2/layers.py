@@ -29,14 +29,6 @@ def calc_padding(i, k=1, s=1, d=1, dim=2):
         pad = pad + padding
     return pad
         
-"""
-    o = (i + 2*p - k - (k-1)*(d-1)) / s + 1
-    s*o = (i + 2*p - k - (k-1)*(d-1)) + s
-    s*o - s = i + 2*p - k - (k-1)*(d-1)
-    s*o - s - i + k + (k-1)*(d-1) = 2*p
-    (s(o-1) - i + k + (k-1)*(d-1)) / 2 = p
-"""
-
 def make_decoder(dec_list):
     model = nn.Sequential()
     for i in dec_list:
@@ -68,13 +60,6 @@ def make_decoder_list(layer_sizes, out_activation, mean=0.0, std=0.1, bias=0.0):
         model.append(('softplus', nn.Softplus()))
     return model
 
-class ScaleLayer(nn.Module):
-    def __init__(self, scale):
-        super(ScaleLayer, self).__init__()
-        self.scale = scale
-    def forward(self, x):
-        return self.scale * x
-
 class MatrixToOut(nn.Module):
     def __init__(self, output_dim):
         super(MatrixToOut, self).__init__()
@@ -92,36 +77,6 @@ class MatrixToConv(nn.Module):
         x = x.permute(0,1,4,2,3).contiguous().view(shp[0], -1, shp[2], shp[3])
         y = y.view(shp[0], -1, shp[2], shp[3])
         return torch.cat([x, y], dim=1)
-
-class SinusEncoderLayer(nn.Module):
-    """
-    Positional Hierarchical Binary Coding
-    """
-    def __init__(self):
-        super(SinusEncoderLayer, self).__init__()
-        self.m = None
-
-    def forward(self, x):
-        if self.m is None:
-            w = x.shape[-1]
-
-            row = torch.zeros(w)
-            for i in range(w):
-                theta = 2*math.pi*i/w
-                row[i] += math.sin(theta)
-            row_list = []
-            for i in range(w):
-                row_list.append(row)
-            self.m = torch.stack(row_list)
-            self.m = self.m + self.m.transpose(1,0)
-            self.m = self.m - self.m.min()
-            self.m = self.m / self.m.max()
-            
-        if x.device != self.m.device:
-            self.m = self.m.cuda(x.device)
-            
-        x = torch.cat([x,self.m[None,None,:,:].repeat(x.shape[0],1,1,1)], dim=1)
-        return x
 
 class PosEncoderLayer(nn.Module):
     """
@@ -166,70 +121,6 @@ class PosEncoderLayer(nn.Module):
         x = torch.cat([x,self.m[None,None,:,:].repeat(x.shape[0],1,1,1)], dim=1)
         return x
 
-
-class ConvVector2d(nn.Module):
-    def __init__(self, output_dim, h, kernel_size, stride, padding, bias):
-        super(ConvVector2d, self).__init__()
-        self.output_dim = output_dim
-        self.h = h
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.bias = bias
-        self.not_initialized = True
-        
-    def init(self, x): # batch_size, input_dim, input_atoms, dim_x, dim_y
-        self.conv = nn.Conv2d(in_channels=x.size(2),
-                                       out_channels=self.output_dim * self.h,
-                                       kernel_size=self.kernel_size,
-                                       stride=self.stride,
-                                       padding=self.padding,
-                                       bias=self.bias)
-        nn.init.normal_(self.conv.weight.data, mean=0,std=0.1)
-        self.not_initialized = False
-
-
-    def forward(self, x):
-        """ x: batch_size, input_dim, input_atoms, dim_x, dim_y """
-        if type(x) is tuple:
-            x = x[0]
-        shp = x.shape                                           # batch_size, input_dim, input_atoms, dim_x, dim_y
-
-        if len(shp) == 4:
-            """ If previous was Conv2d """
-            x = x.unsqueeze(1)
-            shp = x.shape
-        elif (shp[-1] == self.h) and (shp[2] == shp[3]): # b, C, w, w, h
-            """ If previous was MatrixRouting """
-            x = x.permute(0,1,4,2,3)
-            shp = x.shape
-        if self.not_initialized:
-            self.init(x)
-        
-        x = x.view(shp[0]*shp[1], shp[2], shp[3], shp[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
-        x = self.conv(x)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
-
-        votes = x.view(shp[0], -1, self.output_dim, self.h, x.size(-2), x.size(-1)) # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
-        return votes
-
-"""
-def getNormal(sz): 
-    y = [] 
-    for i in range(sz): 
-        b=i*4/sz - 2 
-        f=(i+1)*4/sz - 2 
-        y.append(norm.cdf(f)-norm.cdf(b)) 
-    normal = np.stack(y) 
-    b=int((sz-1)/2) 
-    f=int(sz/2) 
-    remain = (1 - normal.sum())/(f-b+1) 
-    for i in range(f-b+1): 
-        normal[b+i] += remain 
-    rows = normal.reshape(-1,1) 
-    cols = normal.reshape(1,-1) 
-    kernel = rows*cols 
-    return kernel
-"""
 
 class PrimMatrix2d(nn.Module):
     def __init__(self, output_dim, h, kernel_size, stride, padding, bias, advanced=False, func='Conv2d', pool=False):
@@ -344,170 +235,6 @@ class PrimMatrix2d(nn.Module):
         return votes, activations
 
 
-class ConvMatrix2d(nn.Module):
-    def __init__(self, output_dim, hh, kernel_size, stride, padding=0):
-        super(ConvMatrix2d, self).__init__()
-        self.output_dim = output_dim
-        self.h = int(math.sqrt(hh))
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.not_initialized = True
-
-    def init(self, x): # batch, input_dim, input_atoms, dim_x, dim_y       (self.b, self.C, self.w, self.w, hh)
-        if self.kernel_size == 0:
-            self.kernel_size = x.shape[-2]
-        self.weight = nn.Parameter(torch.randn(x.shape[1], self.kernel_size, self.kernel_size, self.output_dim, self.h, self.h))  # B,K,K,C,4,4
-        self.not_initialized = False
-
-    def forward(self, x): # (self.b, self.C, self.w, self.w, hh)    # batch, input_dim, input_atoms, dim_x, dim_y
-        if type(x) is tuple:
-            x = x[0]
-        shp = x.shape
-        
-        """ If previous was ConvVector2d """
-        if len(shp) == 6: # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
-            x = x.permute(0,1,2,4,5,3)
-            x = x.view(shp[0], -1, shp[-2], shp[-1], shp[3])
-        if self.not_initialized:
-            self.init(x)
-
-        b, input_dim, width_in, _, hh = x.shape
-        w = int((width_in - self.kernel_size) / self.stride + 1)
-        Bkk = input_dim*self.kernel_size*self.kernel_size
-        Cww = self.output_dim*w*w
-
-        pose_list = []
-        for j in range(w):
-            for i in range(w):
-                pose_list.append( x[:, :, self.stride * i:self.stride * i + self.kernel_size, self.stride * j:self.stride * j + self.kernel_size, :] )
-        x = torch.stack(pose_list, dim=-2)  # b,B,K,K,w*w,16
-        del pose_list
-
-        activations = x[...,hh-1:]
-        poses = x[...,:hh-1]
-        
-        poses = poses.view(b, input_dim, self.kernel_size, self.kernel_size, 1, w, w, self.h, self.h)  # b,B,K,K,1,w,w,4,4
-        votes = self.weight[None, :, :, :, :, None, None, :, :] @ poses # b,B,K,K,C,w,w,4,4
-
-        votes = votes.view(b, Bkk, Cww, -1)
-        activations = activations.view(b, Bkk, 1, -1).repeat(1, 1, self.output_dim, 1).view(b, Bkk, Cww, 1)
-        x = torch.cat([votes, activations], dim=-1)
-        
-        return x
-
-
-class ConvCaps(nn.Module):
-    
-    """
-    output_dim:    number of classes
-    """
-    
-    def __init__(self, output_dim, h):
-        super(ConvCaps, self).__init__()
-        self.not_initialized = True
-        self.output_dim = output_dim
-        self.h = h
-
-    def init(self, x):
-        self.weight = nn.Parameter(torch.Tensor(x.size(1), x.size(2), self.output_dim * self.h, 1, 1))
-        nn.init.normal_(self.weight.data, mean=0,std=0.1)      #input_dim, input_atoms, output_dim*h
-        self.not_initialized = False
-
-    def forward(self, x):
-        if type(x) is tuple:
-            x = x[0]
-            
-        """ If previous was ConvVector2d & VectorRouting """
-        if x.shape[-2] > 1:
-            x = x.permute(0, 1, 3, 4, 2).contiguous()           # batch_size, input_dim, output_dim, dim_x, dim_y, input_atoms
-            x = x.view(x.size(0), -1, x.size(-1), 1, 1)         # batch_size, input_dim*dim_x*dim_y, input_atoms, 1, 1
-        if self.not_initialized:
-            self.init(x)
-        
-        x = x.unsqueeze(3)                                         # batch_size, input_dim, input_atoms, 1, dim_x, dim_y
-        tile_shape = list(x.size())
-        tile_shape[3] = self.output_dim * self.h                # batch_size, input_dim, input_atoms, output_dim*h, dim_x, dim_y
-        x = x.expand(tile_shape)                                # batch_size, input_dim, input_atoms, output_dim*h, dim_x, dim_y
-        x = torch.sum(x * self.weight, dim=2)                   # batch_size, input_dim, output_dim*h
-
-        votes = x.view(x.size(0), -1, self.output_dim, self.h, x.size(-2), x.size(-1))
-        return votes
-
-
-class MatrixCaps(nn.Module):
-    def __init__(self, output_dim, hh):
-        super(MatrixCaps, self).__init__()
-        self.C = output_dim
-        self.h = int(math.sqrt(hh))
-        self.not_initialized = True
-
-    def init(self, shp): # b, B, hh
-        self.weight = nn.Parameter(torch.randn(shp[1], shp[2], self.C, self.h, self.h))
-        self.not_initialized = False
-
-    def forward(self, x): # b, B, hh
-        if type(x) is tuple:
-            x = x[0]
-        shp = x.shape
-        if len(shp) == 5:
-            if (shp[-2] == shp[-1]) or (shp[-1] == 1):
-                x = x.view(shp[0], shp[1], -1)
-            else:
-                x = x.view(shp[0], shp[1], -1, shp[-1])
-                
-        if self.not_initialized:
-            if (shp[-3] != shp[-2] and shp[-2] != shp[-1]) or (shp[-3] == shp[-2] and shp[-2] != 1):
-                x_shp = list(x.shape)
-                x_shp[2] = 1
-                self.init(x_shp)
-            else:
-                self.init(x.shape)
-
-        b, B, ww, hh = x.shape
-
-        activations = x[...,hh-1:]
-        poses = x[...,:hh-1].view(b, B, ww, 1, self.h, self.h)
-        
-        votes = self.weight @ poses
-
-        votes = votes.view(b, B*ww, self.C, -1)
-        activations = activations.view(b, B*ww, 1, 1).repeat(1, 1, self.C, 1)
-        x = torch.cat([votes, activations], dim=-1)
-        
-        return x
-
-
-class VectorRouting(nn.Module):
-    def __init__(self, num_routing):
-        super(VectorRouting, self).__init__()
-        self.num_routing = num_routing
-        self.bias = None
-        
-    def init(self, votes): # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
-        if type(votes) is tuple:
-            votes = votes[0]
-        self.bias = nn.Parameter(torch.Tensor(votes.size(2), votes.size(3), 1, 1))
-        nn.init.constant_(self.bias.data, val=0.1)
-
-    def forward(self, votes): # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
-        if self.bias is None:
-            self.init(votes)
-
-        """ If previous was MaxRoutePool | MaxRouteReduce """
-        if type(votes) is tuple:
-            """ the votes are pooled/reduced, so bias is detached """
-            votes = votes[0]
-            biases_replicated = self.bias.repeat([1,1,votes.size(-2),votes.size(-1)])
-        else:
-            biases_replicated = self.bias.repeat([1,1,votes.size(-2),votes.size(-1)])
-            
-        logit_shape = list(votes.size())
-        logit_shape.pop(3)                                      # batch_size, input_dim, output_dim, dim_x, dim_y
-        x, route = dynamic_routing(votes=votes, biases=biases_replicated, logit_shape=logit_shape, num_routing=self.num_routing)
-        return x, route, votes
-
-
 class SparseCoding(nn.Module):
 
     def __init__(self, num_features, k=1, type='lifetime', ema_decay=0.95, target_min_boost=0.96, target_max_boost=4., 
@@ -544,24 +271,6 @@ class SparseCoding(nn.Module):
     """
 
     def update(self, R):
-        """
-        x: batch_size, output_dim, h, (dim_x, dim_y)
-
-        Converts the capsule mask into an appropriate shape then applies it to
-        the capsule embedding.
-    
-        Args:
-          route: tensor, output of the last capsule layer.
-          num_prime_capsules: scalar, number of primary capsules.
-          num_latent_capsules: scalar, number of latent capsules.
-          verbose: boolean, visualises the variables in Tensorboard.
-          ema_decay: scalar, the expontential decay rate for the moving average.
-          steepness_factor: scalar, controls the routing mask weights.
-          clip_threshold: scalar, threshold for clipping values in the mask.
-    
-        Returns:
-          The routing mask and the routing ranks.
-        """
 
         shp = R.shape
         if len(shp) == 5:
@@ -569,38 +278,13 @@ class SparseCoding(nn.Module):
         else:
             capsule_routing = R.data.view(shp[0],shp[1],-1) #.view(shp[0], shp[1], -1)
         
-        """ Calculate routing coefficients """
-        # route: batch_size, input_dim, output_dim, dim_x, dim_y
-        #capsule_routing = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
-
-        """
-        old=0
-        bin=[]
-        min = capsule_routing.min()
-        iterations = 20
-        step = (capsule_routing.max() - min) / iterations
-        for i in range(iterations):
-            val = (capsule_routing < (min + i*step)).sum().item() - old
-            bin.append(val)
-            old += val
-        """
-        
-        
-        """ Boosting """
-        #if self.not_initialized:
-        #    self.register_buffer('boosting_weights', torch.ones(capsule_routing.shape[1], device=R.device))
-        #if self.training:
-        #capsule_routing *= self.boosting_weights
-
         if self.lifetime:
             """ Rank routing coefficients """
             capsule_routing_sum = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
             order = capsule_routing_sum.sort(1, descending=True)[1]
             ranks = (-order).sort(1, descending=True)[1]
         
-            #if self.training:
             """ Winning frequency """
-            #transposed_ranks = ranks.transpose(1,0)  # output_dim, batch_size*input_dim
             if self.masked_freq:
                 masked_routing = ((ranks < self.k).float() * capsule_routing_sum).sum(dim=0)
                 freq = masked_routing / masked_routing.sum()
@@ -608,10 +292,6 @@ class SparseCoding(nn.Module):
                 win_counts = (ranks < self.k).sum(dim=0)
                 freq = win_counts.float() / (self.k*ranks.shape[0]) # output_dim
         else:
-            #order = capsule_routing.sort(1, descending=False)[1]
-            #score = order.sort(1, descending=False)[1]
-            #freq = score.float().mean(0) / capsule_routing.shape[1]
-            
             numel = capsule_routing.shape[1]*capsule_routing.shape[2]
             mu = capsule_routing.sum(dim=(1,2))/numel
             sigma_sqr = ((capsule_routing-mu.view(-1,1,1)) ** 2).sum(dim=(1,2)) / numel
@@ -638,9 +318,6 @@ class SparseCoding(nn.Module):
             self.not_initialized = False
 
         self.freq_ema = self.ema_decay * self.freq_ema + (1 - self.ema_decay) * freq # output_dim
-
-        #if (self.freq_ema != self.freq_ema).sum().item() > 0:
-        #    print()
 
         self.N += 1
 
@@ -670,32 +347,7 @@ class SparseCoding(nn.Module):
                 
                 self.boosting_weights = self.boosting_weights + self.ramp_in * correction * self.boosting_weights * mean_compensation #.sqrt()
                 self.boosting_weights = self.boosting_weights.clamp(min=0.05, max=1)
-
                 
-                """                     
-                self.ramp_in = self.ramp_in-3/250 if self.ramp_in > 1 else self.ramp_in.new_tensor([1.])
-                old = self.boosting_weights.clone()
-                
-                error_normalized = (self.freq_ema - self.target_max_freq) / self.target_max_freq  #).clamp(min=0, max=2) # 1 equal to 100% above
-                self.down_error_integrated += error_normalized
-                mask = (error_normalized > 0).float()
-                self.down_error_integrated = (mask*self.down_error_integrated).clamp(max=1000.) # avoid wind-up
-                error_normalized *= mask
-                correction = -(error_normalized + self.down_error_integrated/3) * self.down_boost_factor
-    
-                error_normalized = (-self.freq_ema + self.target_min_freq) / self.target_min_freq  #).clamp(min=0, max=2) # 1 equal to 100% above
-                self.up_error_integrated += error_normalized
-                mask = (error_normalized > 0).float()
-                self.up_error_integrated = (mask*self.up_error_integrated).clamp(max=1000.) # avoid wind-up
-                error_normalized *= mask
-                correction += (error_normalized + self.up_error_integrated/3) * self.up_boost_factor
-                
-                correction *= self.boosting_weights.clamp(min=0.01).sqrt()
-                correction = (correction*100).int().float() / 100.
-                
-                self.boosting_weights = (self.boosting_weights + correction).clamp(min=0.01, max=1)
-                """
-
             print ()
             print ()
             print ('freq_avg :', *[('%.2f' % i).lstrip('01').lstrip('.') for i in self.freq_ema.tolist()])
@@ -711,27 +363,6 @@ class SparseCoding(nn.Module):
                 print ('Active filters (>5%) :', (self.freq_ema > 0.05/shp[1]).sum().item())
 
 
-        #if not self.return_mask:
-        #    return 1.
-
-        #normalised_ranks = (ranks.shape[1]-1 - ranks).float() / (ranks.shape[1] - 1) # batch_size*input_dim, output_dim
-        #routing_mask = torch.sigmoid(6.*(normalised_ranks - 0.5))
-        #routing_mask = torch.exp(-self.steepness_factor * normalised_ranks) # batch_size*input_dim, output_dim
-        #routing_mask = routing_mask - ( routing_mask * (routing_mask < self.clip_threshold).float() )
-        #routing_mask = routing_mask.unsqueeze(-1).expand(shp)
-        
-        """
-        updated_routing = mask.float() * capsule_routing
-        mu = updated_routing.sum(dim=(1,2)) / mask.sum(dim=(1,2)).float()
-        mu = (mu - 0.5) / 2. + 0.5
-        return (updated_routing > mu.view(-1,1,1)).float()
-        
-        routing_mask = (ranks < self.sparsity*ranks.shape[1]).float()
-        routing_mask = routing_mask.unsqueeze(-1).expand(shp) * activated_features_mask
-        return routing_mask
-        """
-        
-        
 class MatrixRouting(nn.Module):
     def __init__(self, output_dim, num_routing, batchnorm=None, sparse=None, stat=None):
         super(MatrixRouting, self).__init__()
@@ -742,21 +373,15 @@ class MatrixRouting(nn.Module):
         self.batchnorm = batchnorm
         self.sigmoid = nn.Sigmoid()
         #self.hardtanh = nn.Hardtanh(min_val=0,max_val=1)
-        #if isinstance(activation, batchrenorm.Sigmoid):
         if sparse is None:
             self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
-        #self.beta_aa = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1,1))
-        #else:0
-        #    self.beta_a = 0
-        
-        #self.experimental = experimental
+
         self.stat = stat
         if stat is not None:
             for _ in range(4):
                 self.stat.append(0.)
         
     def forward(self, x): # (b, Bkk, Cww, h)
-        #if type(votes) is tuple:
         """ the votes are pooled/reduced, so bias should be detached? """
         V = x[0]
         shp = V.shape
@@ -771,9 +396,6 @@ class MatrixRouting(nn.Module):
         b, Bkk, Cww, h = shp
         a_ = x[1].view(b, Bkk, -1)
         
-        #V = v[...,:h-1]
-        #a_ = v[...,h-1:].squeeze(-1)
-
         # routing coefficient
         if V.is_cuda:
             R = Variable(torch.ones(shp[:3]), requires_grad=False).cuda() / self.output_dim
@@ -885,153 +507,3 @@ class MatrixRouting(nn.Module):
         #mu = mask.view(b, 1, -1, 1) * mu
         return mu.view((b, self.output_dim) + x[0].shape[4:] + (-1,)), a.view((b, self.output_dim) + x[0].shape[4:] + (1,)), sum_R.view((b, self.output_dim) + x[0].shape[4:])
         #mu_a = torch.cat([mu.view((b, self.output_dim) + votes.shape[4:] + (-1,)), a.view((b, self.output_dim) + votes.shape[4:] + (1,))], dim=-1) # b, C, w, w, h
-
-
-class MaxPool(nn.Module):
-    def __init__(self, kernel_size, stride, a_sz, r_sz, rnd_sz=0):
-        super(MaxPool, self).__init__()
-        self.maxpool = nn.MaxPool2d(kernel_size, stride, return_indices=True)
-        self.a_sz = a_sz
-        self.r_sz = r_sz
-        self.rnd_sz = rnd_sz
-        
-    def forward(self, x):
-        """
-        x:     batch_size, output_dim, dim_x, dim_y, h
-        route: batch_size, input_dim, output_dim, dim_x, dim_y
-        votes: batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
-        """
-        x, route, votes = x
-        b, input_dim, output_dim, h, dim_x, dim_y = votes.shape
-        a_orig = x[:,:,:,:,h-1]   # b, output_dim, w_x, w_y
-
-        a, a_sort_id = self.maxpool(a_orig)
-        a_sort_id = a_sort_id.view(b, output_dim, -1)
-        sort_id = a.view(b, output_dim, -1).sort(2, descending=True)[1] # batch, output_dim, dim_x*dim_y
-        a_sort_id = a_sort_id.gather(2, sort_id[:,:,:self.a_sz])
-        
-        offset = torch.arange(b*output_dim, device=x.device).unsqueeze(-1).repeat(1,a_sort_id.shape[-1]) * dim_x*dim_y
-        offset = offset.view_as(a_sort_id)
-        mask = torch.zeros(a_orig.shape, device=x.device)
-        a_sort_id_trans = a_sort_id + offset
-        mask.view(-1)[a_sort_id_trans.view(-1)] = 1
-
-        if self.rnd_sz != 0:
-            idx_lucky = torch.randperm(b*output_dim*dim_x*dim_y)[:self.rnd_sz]
-            mask.view(-1)[idx_lucky] = 1
-        
-        mask = mask.unsqueeze(1).repeat(1,input_dim,1,1,1)
-        route = route + mask
-
-        route = route.view(b, -1, dim_x, dim_y)
-        route, r_sort_id = self.maxpool(route)
-        r_sort_id = r_sort_id.view(b, input_dim, output_dim, -1)
-        sort_id = route.view(b, input_dim, output_dim, -1).sort(3, descending=True)[1] # batch, output_dim, dim_x*dim_y
-        r_sort_id = r_sort_id.gather(3, sort_id[:,:,:,:self.a_sz+self.r_sz+self.rnd_sz])
-
-        idx = torch.randperm(r_sort_id.shape[-1])
-        r_sort_id = r_sort_id[:,:,:,idx]
-
-        ids_combined_h = r_sort_id[:,:,:,None,:].repeat(1,1,1,h,1) # batch, input_dim, output_dim, h, dim_x*dim_y
-
-        votes = votes.view(b,input_dim,output_dim,h,-1).gather(4, ids_combined_h).unsqueeze(-1)
-
-        return votes, None # is None, to force bias detach
-
-
-class MaxActPool(nn.Module):
-    def __init__(self, kernel_size, stride=None, out_sz=100, output_ids=True):
-        super(MaxActPool, self).__init__()
-        self.maxpool = nn.MaxPool2d(kernel_size, stride, return_indices=True)
-        self.out_sz = out_sz
-        self.output_ids = output_ids
-        
-    def forward(self, x):
-        b, output_dim, dim_x, dim_y, h = x.shape
-        a = x[:,:,:,:,h-1]   # b, output_dim, w_x, w_y
-
-        a, sort_id_mp = self.maxpool(a)
-        sort_id_h = sort_id_mp.view(b, output_dim, -1)[:,:,:,None].repeat(1,1,1,h)
-        x = x.view(b, output_dim, -1, h).gather(2, sort_id_h)
-
-        sort_id = a.view(b, output_dim, -1).sort(2, descending=True)[1] # batch, output_dim, dim_x*dim_y
-        sort_id_h = sort_id[:,:,:,None].repeat(1,1,1,h) # batch, output_dim, dim_x*dim_y, h
-        x = x.gather(2, sort_id_h[:,:,:self.out_sz,:]).unsqueeze(3)
-        if self.output_ids:
-            sorted_ids = sort_id_mp.view(b,output_dim,-1).gather(2, sort_id)[:,:,:self.out_sz]
-            return x, sorted_ids, dim_x, dim_y
-        return x
-
-
-class KeyRouting(nn.Module):
-    def __init__(self, conv_layer, pre_conv_x_obj):
-        super(KeyRouting, self).__init__()
-        self.conv_layer = conv_layer
-        self.pre_conv_x_obj = pre_conv_x_obj
-
-    def forward(self, x): # x: # # batch_size*input_dim, input_atoms, dim_x, dim_y
-        # Create Keys and center these with a mean of zero
-        shp = self.conv_layer.conv.weight.size()
-        mean_weight = self.conv_layer.conv.weight.data.view(shp[0],shp[1],-1).mean(2, keepdim=True).unsqueeze(-1).expand(shp)
-        corr_weight = (self.conv_layer.conv.weight.data - mean_weight)
-        del mean_weight
-        
-        # Normalize keys, so high contrast keys don't contribute more than low contrast keys
-        norm = corr_weight.view(shp[0],shp[1],-1).norm(p=1, dim=2, keepdim=True).unsqueeze(-1)
-        norm_weight = corr_weight / norm
-        del corr_weight
-        del norm
-        
-        # Center x with a mean of zero
-        x_shp = self.pre_conv_x_obj[0].size()
-        pre_x = self.pre_conv_x_obj[0].data.view(x_shp[0]*x_shp[1], x_shp[2], x_shp[3], x_shp[4])  # batch_size*input_dim, input_atoms, dim_x, dim_y
-        mean_x = pre_x.view(x_shp[0]*x_shp[1],x_shp[2],-1).mean(dim=2, keepdim=True).unsqueeze(-1)
-        corr_x = pre_x - mean_x
-        del mean_x
-
-        # Convolve coor_x - Try to fit keys
-        corr_x = F.conv2d(corr_x, norm_weight, None, self.conv_layer.conv.stride, self.conv_layer.conv.padding, self.conv_layer.conv.dilation, 1) # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
-        del norm_weight
-        
-        a_sort = corr_x.view(x_shp[0]*x_shp[1], x.shape[2], x.shape[3], -1).norm(p=1, dim=2).norm(p=2, dim=1) #.sort(1, descending=True)[1]
-        #order = a_sort.sort(1)[1]
-        #rank = (-order).sort(1,descending=True)[1].float()
-        # batch_size*input_dim, output_dim, h, out_dim_x*out_dim_y -> batch_size*input_dim, out_dim_x*out_dim_y
-
-        #del corr_x
-        a_sort = a_sort.view(x_shp[0], x_shp[1], 1, corr_x.shape[-2], corr_x.shape[-1]).repeat(1,1,x.shape[2],1,1) # batch_size, input_dim, output_dim, out_dim_x, out_dim_y
-
-        return x, a_sort
-
-
-def dynamic_routing(votes, biases, logit_shape, num_routing):
-    # votes: batch_size, input_dim, output_dim, h, (dim_x, dim_y)
-    
-    votes_trans = votes.permute(votes_t_shape)                      # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
-    #votes_trans_stopped = votes_trans.clone().detach()
-
-    logits = Variable(torch.zeros(logit_shape, device=votes.device), requires_grad=False)
-                                                                    # batch_size, input_dim, output_dim, (dim_x, dim_y)
-    for i in range(num_routing):
-        route = F.softmax(logits, 2)                                # batch_size, input_dim, output_dim, (dim_x, dim_y)
-
-        if i == num_routing - 1:
-            preactivate_unrolled = route * votes_trans              # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
-            preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, h, (dim_x, dim_y)
-            preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, h, (dim_x, dim_y)
-            activation = _squash(preactivate)                       # squashing of "h" dimension
-        else:
-            preactivate_unrolled = route * votes_trans.data #_stopped      # h, batch_size, input_dim, output_dim, (dim_x, dim_y)
-            preact_trans = preactivate_unrolled.permute(r_t_shape)  # batch_size, input_dim, output_dim, h, (dim_x, dim_y)
-            preactivate = torch.sum(preact_trans, dim=1) + biases   # batch_size, output_dim, h, (dim_x, dim_y)
-            activation = _squash(preactivate)                       # squashing of "h" dimension
-            act_3d = activation.unsqueeze_(1)                       # batch_size, 1, output_dim, h, (dim_x, dim_y)
-            distances = torch.sum(votes.data * act_3d, dim=3)            # batch_size, input_dim, output_dim, (dim_x, dim_y)
-            logits = logits + distances                             # batch_size, input_dim, output_dim, (dim_x, dim_y)
-            
-    return (activation, route)                                        # batch_size, output_dim, h, (dim_x, dim_y)
-
-def _squash(input_tensor):
-    norm = torch.norm(input_tensor, p=2, dim=2, keepdim=True)
-    norm_squared = norm * norm
-    return (input_tensor / norm) * (norm_squared / (1 + norm_squared))

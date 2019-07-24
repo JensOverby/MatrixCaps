@@ -44,29 +44,6 @@ class MSELossWeighted(nn.Module):
                         self.count = 300
         return loss        
 
-    """
-        if self.normalize > 0:
-            lenx = p[:,:3].norm(dim=1, p=2, keepdim=True)
-            leny = p[:,3:6].norm(dim=1, p=2, keepdim=True)
-            A, B = (0.2-1)/0.2, 1
-            lenx = torch.where(lenx > 0.2, lenx, A*lenx+B)
-            leny = torch.where(leny > 0.2, leny, A*leny+B)
-            pnorm = p.new_full(p.size(), 1)
-            pnorm[:,:3] = lenx
-            pnorm[:,3:6] = leny
-            p = p / pnorm
-
-            if self.normalize > 1:
-                len_b = p[:,3:6].norm(dim=1, p=2, keepdim=True)
-                a = p.data[:,:3]
-                b = p.data[:,3:6]
-                c = torch.cross(a,b,dim=1)
-                b1 = torch.cross(c,a,dim=1)
-                b1 = b1 / b1.norm(dim=1,keepdim=True,p=2)
-                b1 = b1 * len_b
-                pnorm[:,3:6] = b1/b
-                p = p * pnorm
-    """
 
 def insert(ordereddict, key, newkey, object):
     new_orderded_dict=ordereddict.__class__()
@@ -384,15 +361,12 @@ class CapsNet(nn.Module):
             layer_list['prim1'] = layers.PrimMatrix2d(output_dim=B, h=h, kernel_size=5, stride=2, padding=0, bias=True) # -> 29
             layer_list['bnn1'] = layers2.BNLayer()
             layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1)
-            #layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1, activation=af.NormedActivation(B, momentum=0.1*(args.batch_size/20), update_interval=1, activation=af.Sigmoid()))
 
             layer_list['prim2'] = layers.PrimMatrix2d(output_dim=C, h=h, kernel_size=3, stride=2, padding=1, bias=False, advanced=True, pool=True) # -> 13
             layer_list['bnn2'] = layers2.BNLayer2()
             route2 = layers.MatrixRouting(output_dim=C, num_routing=3, batchnorm=af.BatchRenorm(num_features=C, update_interval=3, momentum=0.1*(args.batch_size/20)),
                                             sparse=layers.SparseCoding(C, type='lifetime',
                                             target_max_boost=2., boost_update_count=len_dataset, return_mask=False, active=True), stat=stat)
-            #route2 = layers.MatrixRouting(output_dim=C, num_routing=3, experimental=True, sparse=layers.SparseCoding(C, type='population', down_boost_factor=0.5, up_boost_factor=0.05, target_max_boost=0.6, target_min_boost=0.47, return_mask=False, active=True), stat=stat)
-            #self.routing_list.append(route2)
             layer_list['route2'] = route2
             
             layer_list['prim2a'] = layers.PrimMatrix2d(output_dim=D, h=h, kernel_size=3, stride=2, padding=0, bias=False, advanced=True, pool=True) # -> 7
@@ -400,8 +374,6 @@ class CapsNet(nn.Module):
             route2a = layers.MatrixRouting(output_dim=D, num_routing=3, batchnorm=af.BatchRenorm(num_features=D, update_interval=3, momentum=0.1*(args.batch_size/20)),
                                             sparse=layers.SparseCoding(D, type='lifetime',
                                             target_max_boost=2., boost_update_count=len_dataset, return_mask=False, active=True), stat=stat)
-            #route2a = layers.MatrixRouting(output_dim=C, num_routing=3, experimental=True, sparse=layers.SparseCoding(C, type='population', down_boost_factor=0.5, up_boost_factor=0.05, target_max_boost=0.6, target_min_boost=0.47, return_mask=False, active=True), stat=stat)
-            #self.routing_list.append(route2a)
             layer_list['route2a'] = route2a
 
 
@@ -421,8 +393,6 @@ class CapsNet(nn.Module):
             route3 = layers.MatrixRouting(output_dim=E, num_routing=3, batchnorm=af.BatchRenorm(num_features=E, update_interval=3, momentum=0.1*(args.batch_size/20)),
                                             sparse=layers.SparseCoding(E, type='lifetime',
                                             target_max_boost=2., boost_update_count=len_dataset, return_mask=False, active=True), stat=stat)
-            #route3 = layers.MatrixRouting(output_dim=D, num_routing=3, experimental=True, sigmoid_offset=0., sparse=layers.SparseCoding(D, type='population', down_boost_factor=1., up_boost_factor=0.1, target_max_boost=0.6, target_min_boost=0.47, return_mask=False), stat=stat)
-            #self.routing_list.append(route3)
             layer_list['route3'] = route3
 
             #container = []
@@ -466,73 +436,6 @@ class CapsNet(nn.Module):
             """
             self.image_decoder = None #nn.Sequential(decoder_list)
             
-        """
-        self.route_list = []
-        
-        for name, module in self.capsules.named_modules():
-            if name[0:5] == 'route' and name[-6:] != 'sparse':
-                sz = module.output_dim
-                rmodule = module
-                dist = (torch.rand(10000,sz) > 2/3).float()
-                mu = dist.mean()
-                var = ((dist - mu) ** 2).sum() / dist.numel()
-                self.route_list.append((module, mu, var))
-        #module = self.route_list[-1][0]
-        #self.route_list.pop(-1)
-        dist = (torch.rand(10000,sz) > (sz-1)/sz).float()
-        mu = dist.mean()
-        var = ((dist - mu) ** 2).sum() / dist.numel()
-        self.route_list.append((rmodule, mu, var))
-        elif dataset == 'msra':
-            A, B, C, D, E, h = 13, 16, 32, 32, 5, 12
-            
-            layer_list = OrderedDict()
-            layer_list['posenc'] = layers.PosEncoderLayer()
-            layer_list['conv1'] = nn.Conv2d(in_channels=1+1, out_channels=A, kernel_size=15, stride=3, padding=0, bias=False)
-            nn.init.normal_(layer_list['conv1'].weight.data, mean=0,std=0.1)
-            layer_list['bn1'] = nn.BatchNorm2d(num_features=A, eps=0.001, momentum=0.1, affine=True)
-            layer_list['relu1'] = nn.ReLU(inplace=True)
-
-            layer_list['prim1'] = layers.PrimMatrix2d(output_dim=B, h=h, kernel_size=11, stride=2, padding=0, bias=True)
-            layer_list['bnn1'] = layers2.BNLayer()
-            layer_list['route1'] = layers.MatrixRouting(output_dim=B, num_routing=1)
-
-            layer_list['prim2'] = layers.PrimMatrix2d(output_dim=C, h=h, kernel_size=7, stride=2, padding=0, bias=False, advanced=True)
-            layer_list['bnn2'] = layers2.BNLayer()
-            layer_list['route2'] = layers.MatrixRouting(output_dim=C, num_routing=3)
-
-            layer_list['prim3'] = layers.PrimMatrix2d(output_dim=D, h=h, kernel_size=5, stride=2, padding=0, bias=False, advanced=True)
-            layer_list['bnn3'] = layers2.BNLayer()
-            layer_list['route3'] = layers.MatrixRouting(output_dim=D, num_routing=3)
-
-            self.decoder_input_atoms = 15
-            layer_list['prim4'] = layers.PrimMatrix2d(output_dim=E, h=self.decoder_input_atoms, kernel_size=0, stride=1, padding=0, bias=False, advanced=True)
-            layer_list['bnn4'] = layers2.BNLayer()
-            layer_list['route4'] = layers.MatrixRouting(output_dim=E, num_routing=3)
-            self.capsules = nn.Sequential(layer_list)
-
-            decoder_list = OrderedDict()
-            #decoder_list['prepare'] = layers2.Pose2VectorRepLayer()
-            decoder_list['1transposed'] = layers.PrimMatrix2d(output_dim=32, h=15, kernel_size=10, stride=1, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
-            decoder_list['bnn1_transposed'] = layers2.BNLayer()
-            decoder_list['route1_transposed'] = layers.MatrixRouting(output_dim=32, num_routing=3)
-    
-            decoder_list['2transposed'] = layers.PrimMatrix2d(output_dim=16, h=12, kernel_size=5, stride=2, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
-            decoder_list['bnn2_transposed'] = layers2.BNLayer()
-            decoder_list['route2_transposed'] = layers.MatrixRouting(output_dim=16, num_routing=3)
-    
-            decoder_list['3transposed'] = layers.PrimMatrix2d(output_dim=1, h=12, kernel_size=7, stride=2, padding=0, bias=False, advanced=True, func='ConvTranspose2d')
-            decoder_list['bnn3_transposed'] = layers2.BNLayer()
-            decoder_list['route3_transposed'] = layers.MatrixRouting(output_dim=1, num_routing=3)
-    
-            decoder_list['transform'] = layers.MatrixToConv()
-    
-            decoder_list['conv1_transposed'] = nn.ConvTranspose2d(in_channels=13, out_channels=1, kernel_size=11, stride=2, padding=6, output_padding=1, bias=True)
-            nn.init.normal_(decoder_list['conv1_transposed'].weight.data, mean=0,std=0.1)
-    
-            self.image_decoder = nn.Sequential(decoder_list)
-        """
-        
     def forward(self, x, disable_recon=False):
         p = self.capsules(x)
         if not disable_recon and self.image_decoder is not None:

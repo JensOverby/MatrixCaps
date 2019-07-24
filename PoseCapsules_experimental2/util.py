@@ -94,28 +94,6 @@ class CapsuleLoss(nn.Module):
     def forward(self, output, labels):
         return self.loss(output, labels)
 
-def getSigmoidParams(criteria=9/10):
-    dist = (torch.linspace(0,1, steps=1000) > criteria).float()
-    mu_ref = dist.mean()
-    var_ref = dist.std()**2
-    kaj = torch.linspace(-1,1)
-    kaj = kaj / kaj.std()
-    A = 1
-    B = 1
-    while (True):
-        c = 0
-        mu = torch.sigmoid(-A + B*kaj).mean()
-        if mu > mu_ref:
-            A += 0.1
-            c += 1
-        var = torch.sigmoid(-A + B*kaj).std()**2
-        if var < var_ref:
-            B += 0.1
-            c += 1
-        if c == 0:
-            break
-    return A, B
-
 
 class statNothing():
     def __init__(self):
@@ -448,12 +426,8 @@ class MyImageFolder(datasets.ImageFolder):
             axis_angle_rep = np.concatenate([Q.axis*Q.angle, np.array(data[6:9])], axis=0)
             labels = torch.from_numpy(axis_angle_rep).float()
         
-        #labels = matMinRep_from_qvec(labels.unsqueeze(0)).squeeze()
-        
         return sample, labels
 
-#labels[:,None,3:7].shape
-#labels[(labels[:,6] < 0).nonzero(),3:7].shape
 
 class myTest(data.Dataset):
     def __init__(self, width=28, sz=1000, img_type='one_point', factor=0.3, rnd = True, transform=None, target_transform=None, max_z=-100000, min_z=100000):
@@ -546,25 +520,6 @@ class myTest(data.Dataset):
                     self.train_labels.append(torch.tensor(target))
                     pbar.update()
 
-                    """                    
-                    x = random.random()*8
-                    point1 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
-                    point2 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
-                    theta = random.random()*2*math.pi
-                    point3 = x, x+2, math.cos(theta), math.sin(theta)
-                    theta = random.random()*2*math.pi
-                    point4 = x, x+2, math.cos(theta), math.sin(theta)
-                    theta = random.random()*2*math.pi
-                    noise1 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
-                    theta = random.random()*2*math.pi
-                    noise2 = random.random()*10, random.random()*10, math.cos(theta), math.sin(theta)
-
-                    img = torch.stack([torch.tensor(point1), torch.tensor(point2), torch.tensor(point3), torch.tensor(point4), torch.tensor(noise1), torch.tensor(noise2)]) # batch_size, input_dim, input_atoms, dim_x, dim_y
-                    target = point3[0]/2, point3[1]/2, point1[2]*2, point1[3]*2
-                    self.train_data.append(img[...,None, None])
-                    self.train_labels.append(torch.tensor(target))
-                    pbar.update()
-                    """
             elif img_type=='three_dot':
                 scale = width/10.0
                 A = np.array([-1,-2])
@@ -646,13 +601,7 @@ class myTest(data.Dataset):
                         if min([red,green,blue]) < self.min_z:
                             self.min_z = min([red,green,blue])
                     
-                    #axis = rot.axis
-                    #modulo = int(rot.angle/math.pi)
-                    #angle = rot.angle%math.pi
-                    #if modulo%2 == 1:
-                    #    axis *= -1
                     target = torch.tensor([mat[0,0], mat[0,1],mat[0,2],mat[1,0],mat[1,1],mat[1,2], xyz[0], xyz[1], xyz[2], 1.0])
-                    #target[:3] = (target[:3] - 2.5) / (5./2.) - 1 # scale to {-1,1}
                     self.train_data.append(img)
                     self.train_labels.append(target)
                     pbar.update()
@@ -761,16 +710,7 @@ class myTest(data.Dataset):
 
     def __getitem__(self, index):
         img, target = self.train_data[index], self.train_labels[index]
-        # doing this so that it is consistent with all other datasets
-        # to return a PIL Image
-        
-        """
-        img = Image.fromarray((img.numpy()*255).astype(np.uint8)) #, mode='L')
-        if self.transform is not None:
-            img = self.transform(img)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-        """
+
         return img, target
 
 
