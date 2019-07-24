@@ -22,10 +22,10 @@ from tqdm import tqdm
 from torch.autograd import detect_anomaly
 from datasets import smallNORB, MARAHandDataset #, transform_train
 
-torch.manual_seed(1991)
-torch.cuda.manual_seed(1991)
-random.seed(1991)
-np.random.seed(1991)
+#torch.manual_seed(1991)
+#torch.cuda.manual_seed(1991)
+#random.seed(1991)
+#np.random.seed(1991)
 torch.set_printoptions(precision=3, threshold=5000, linewidth=180)
 
 import torch.utils.data as data
@@ -39,55 +39,6 @@ model.register_backward_hook(hookFunc)
 """
 
 
-class CapsuleLoss(nn.Module):
-    def __init__(self, args, steps):
-        super(CapsuleLoss, self).__init__()
-        if args.dataset[:5] == 'MNIST':
-            self.begin = -1
-            self.end = None
-            self.loss = getattr(self, 'spread_loss')
-            self.step = 0.7*steps / 5.
-            if args.pretrained:
-                self.m = 0.9
-            else:
-                self.m = 0.2
-        elif args.dataset == 'smallNORB':
-            self.begin = -1
-            self.end = None
-            self.loss = getattr(self, 'my_spread_loss')
-            self.step = 0.7*steps / 20.
-            if args.pretrained:
-                self.m = 0.9
-            else:
-                self.m = 0.2
-        else:
-            self.loss = nn.MSELoss(reduction='sum')
-            self.begin = None
-            self.end = -1
-        
-    def spread_loss(self, x, target):
-        loss = F.multi_margin_loss(x, target, p=2, margin=self.m)
-        if self.m < 0.9:
-            self.m += self.step
-        return loss
-    
-    def my_spread_loss(self, x, target):
-        b, E = x.shape
-        at = torch.cuda.FloatTensor(b).fill_(0)
-        for i, lb in enumerate(target):
-            at[i] = x[i][lb]
-        at = at.view(b, 1).repeat(1, E)
-        zeros = x.new_zeros(x.shape)
-        loss = torch.max(self.m - (at - x), zeros)
-        loss = loss**2
-        loss = loss.sum() / b - self.m**2
-        if self.m < 0.9:
-            self.m += self.step
-        return loss    
-    
-    def forward(self, output, labels):
-        x = output.view(output.shape[0], -1, output.shape[-1])[:,:,self.begin:self.end].squeeze()
-        return self.loss(x, labels)
 
 
 if __name__ == '__main__':
@@ -127,6 +78,10 @@ if __name__ == '__main__':
     elif args.dataset == 'three_dot_3d':
         train_dataset = util.myTest(width=50, sz=5000, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
         test_dataset = util.myTest(width=50, sz=100, img_type=args.dataset, rnd=True, transform=transforms.Compose([transforms.ToTensor(),]), max_z=train_dataset.max_z, min_z=train_dataset.min_z)
+    elif args.dataset == 'matmul_test' or args.dataset == 'matmul':
+        train_dataset = util.myTest(width=3, sz=500, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
+        test_dataset = util.myTest(width=3, sz=10, img_type=args.dataset, transform=transforms.Compose([transforms.ToTensor(),]))
+        logger = util.statNothing()
     elif args.dataset[:5] == 'MNIST':
         train_dataset = datasets.MNIST(root='../../data/', train=True, transform=transforms.ToTensor(), download=True)
         test_dataset = datasets.MNIST(root='../../data/', train=False, transform=transforms.ToTensor())
@@ -156,7 +111,7 @@ if __name__ == '__main__':
     """
     #imgs = imgs[:2]
     stat = []
-    model = CapsNet(args, stat)
+    model = CapsNet(args, len(train_dataset) // (2*args.batch_size) + 3, stat)
 
     use_cuda = not args.disable_cuda and torch.cuda.is_available()
     if use_cuda:
@@ -171,9 +126,12 @@ if __name__ == '__main__':
     """
     Construct optimizer, scheduler, and loss functions
     """
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-3, betas=(0.99, 0.999))
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr if args.lr else 1e-3, betas=(0.9, 0.999))
+    #optimizer = torch.optim.SGD(model.parameters(), lr=args.lr if args.lr else 1e-3, momentum=0.9, weight_decay=0.0005)
+    
+    
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.patience, threshold=1e-6, verbose=True)
-    caps_loss = CapsuleLoss(args, 1/(len(train_dataset)/args.batch_size))
+    caps_loss = util.CapsuleLoss(args, 1/(len(train_dataset)/args.batch_size), model)
     recon_loss = nn.MSELoss(reduction='sum')
 
 
@@ -226,6 +184,7 @@ if __name__ == '__main__':
             logger.reset()
             torch.cuda.empty_cache()
             for _ in range(steps):
+
                 try:
                     data = sup_iterator.next()
                 except StopIteration:
@@ -233,7 +192,6 @@ if __name__ == '__main__':
                     data = sup_iterator.next()
 
                 imgs, labels = data
-
 
                 imgs = Variable(imgs)
                 if use_cuda:
@@ -314,14 +272,14 @@ if __name__ == '__main__':
                     logger.reconLossAvg.add(add_loss.data.cpu().item() / args.batch_size)
                     logger.recon_sum = recon.sum().data.cpu().item()
 
-                torch.autograd.set_detect_anomaly(True)
-                with detect_anomaly():
-                    loss.backward()
+                #torch.autograd.set_detect_anomaly(True)
+                #with detect_anomaly():
+                loss.backward()
                 
                 optimizer.step()
 
                 
-                logger.log(pbar, out_labels, labels, stat)
+                logger.log(pbar, out_labels, labels, stat=stat)
 
                 pbar.update()
                 
@@ -420,7 +378,7 @@ if __name__ == '__main__':
                         add_loss = model.recon_factor * recon_loss(recon, i_imgs)
                         logger.reconLossAvg.add(add_loss.data.cpu().item() / args.batch_size)
                         
-                    logger.log(pbar, out_labels, labels, stat)
+                    logger.log(pbar, out_labels, labels, stat=stat)
                     pbar.update()
                 
 

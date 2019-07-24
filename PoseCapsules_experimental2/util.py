@@ -29,6 +29,71 @@ from collections import OrderedDict
 #meter_accuracy = tnt.meter.ClassErrorMeter(accuracy=True)
 #setting_logger = VisdomLogger('text', opts={'title': 'Settings'}, env='PoseCapsules')
 
+class CapsuleLoss(nn.Module):
+    def __init__(self, args, steps, model=None):
+        super(CapsuleLoss, self).__init__()
+        if args.dataset[:5] == 'MNIST':
+            self.begin = -1
+            self.end = None
+            self.loss = getattr(self, 'spread_loss')
+            self.step = 0.7*steps / 5.
+            if args.pretrained:
+                self.m = 0.9
+            else:
+                self.m = 0.2
+        elif args.dataset == 'smallNORB':
+            self.begin = -1
+            self.end = None
+            self.loss = getattr(self, 'my_spread_loss')
+            self.step = 0.7*steps / 20.
+            if args.pretrained:
+                self.m = 0.9
+            else:
+                self.m = 0.2
+        elif args.dataset == 'msra':
+            self.model = model
+            self.loss = getattr(self, 'hand_loss_mse')
+            self.loss1 = nn.L1Loss(reduction='mean')   #MSELoss
+            self.begin = None
+            self.end = -1
+        else:
+            self.loss = nn.MSELoss(reduction='sum')
+        
+    def spread_loss(self, x, target):
+        loss = F.multi_margin_loss(x, target, p=2, margin=self.m)
+        if self.m < 0.9:
+            self.m += self.step
+        return loss
+    
+    def my_spread_loss(self, x, target):
+        b, E = x.shape
+        at = torch.cuda.FloatTensor(b).fill_(0)
+        for i, lb in enumerate(target):
+            at[i] = x[i][lb]
+        at = at.view(b, 1).repeat(1, E)
+        zeros = x.new_zeros(x.shape)
+        loss = torch.max(self.m - (at - x), zeros)
+        loss = loss**2
+        loss = loss.sum() / b - self.m**2
+        if self.m < 0.9:
+            self.m += self.step
+        return loss    
+
+    def hand_loss_mse(self, x, target):
+        xx = x.view(x.shape[0], -1, x.shape[-1])[:,:,self.begin:self.end].squeeze()
+        x1 = torch.cat([xx[:,0,:], xx[:,1,3:], xx[:,2,3:], xx[:,3,3:], xx[:,4,3:]], dim=1)
+        labels1 = torch.cat([target[:,0,:], target[:,1,3:], target[:,2,3:], target[:,3,3:], target[:,4,3:]], dim=1)
+
+        loss = self.loss1(x1, labels1)
+
+        for param in self.model.parameters():
+            loss += 0.00001 * torch.norm(param, 2)
+        
+        return loss
+    
+    def forward(self, output, labels):
+        return self.loss(output, labels)
+
 def getSigmoidParams(criteria=9/10):
     dist = (torch.linspace(0,1, steps=1000) > criteria).float()
     mu_ref = dist.mean()
@@ -51,6 +116,25 @@ def getSigmoidParams(criteria=9/10):
             break
     return A, B
 
+
+class statNothing():
+    def __init__(self):
+        self.lossAvg = tnt.meter.AverageValueMeter()
+        self.train_loss_logger = VisdomPlotLogger('line', opts={'title': 'Train Loss'}, env='PoseCapsules')
+        self.test_loss_logger = VisdomPlotLogger('line', opts={'title': 'Test Loss'}, env='PoseCapsules')
+
+    def reset(self):
+        self.lossAvg.reset()
+
+    def log(self, pbar, output, labels, dict = OrderedDict(), stat=None):
+        dict['loss'] = self.lossAvg.value()[0]
+        pbar.set_postfix(dict, refresh=False)
+
+    def endTrainLog(self, epoch, groundtruth_image=None, recon_image=None):
+        self.train_loss_logger.log(epoch, self.lossAvg.value()[0], name='loss')
+
+    def endTestLog(self, epoch):
+        self.test_loss_logger.log(epoch, self.lossAvg.value()[0], name='loss')
 
 class statBase():
     def __init__(self, args):
@@ -189,6 +273,7 @@ class statJoints(statBase):
     def __init__(self, args, scale = [1.,1.,1.]):
         super(statJoints, self).__init__(args)
         self.jointErrAvg = tnt.meter.AverageValueMeter()
+        self.joint_logger = VisdomPlotLogger('line', opts={'title': 'Joint error'}, env='PoseCapsules')
         self.scale = scale
 
     def reset(self):
@@ -218,12 +303,21 @@ class statJoints(statBase):
         sc = torch.from_numpy(self.scale).float().cuda()[None,None,None,:].expand(err.shape)   #torch.tensor([self.scale], device=output.device)[None, None, None, :].expand(err.shape)
         err = err * sc
         mean = err[:,:,1:,:].norm(dim=3).mean().item()
-        mean1 = err[:,:,0,:].norm(dim=2).mean().item()
+        mean1 = err[:,0,0,:].norm(dim=1).mean().item()
         mean = (20*mean + mean1)/21
         self.jointErrAvg.add(mean)
         dict = OrderedDict()
         dict['jointErr'] = self.jointErrAvg.value()[0]
         super(statJoints, self).log(pbar, output, labels, dict, stat)
+
+    def endTrainLog(self, epoch, groundtruth_image=None, recon_image=None):
+        super(statJoints, self).endTrainLog(epoch, groundtruth_image, recon_image)
+        self.joint_logger.log(epoch, self.jointErrAvg.value()[0], name='train')
+
+    def endTestLog(self, epoch):
+        super(statJoints, self).endTestLog(epoch)
+        self.joint_logger.log(epoch, self.jointErrAvg.value()[0], name='test')
+
 
 class statTransmatrix(statBase):
     def __init__(self, args):
@@ -570,7 +664,60 @@ class myTest(data.Dataset):
                     aa = (val > 0).float() * a
                     self.train_data[i] *= aa
                     self.train_data[i] += bb
-                    
+            elif img_type=='matmul_test':
+                x_rot = random.random()*2.0*math.pi
+                y_rot = random.random()*2.0*math.pi
+                z_rot = random.random()*2.0*math.pi
+                euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
+                mat = pyrr.matrix33.create_from_eulers(euler)
+                trans = torch.from_numpy(mat).float()
+                for _ in range(sz):
+                    x_rot = random.random()*1.*math.pi
+                    y_rot = random.random()*1.*math.pi
+                    z_rot = random.random()*1.*math.pi
+                    euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
+                    mat = pyrr.matrix33.create_from_eulers(euler)
+                    img = torch.from_numpy(mat).float()
+                    self.train_data.append(img.view(1,3,3))
+                    target = trans @ img
+                    self.train_labels.append(target.view(1,3,3))
+                    pbar.update()
+
+            elif img_type=='matmul':
+                isz = 28
+                x_rot = random.random()*2.0*math.pi
+                y_rot = random.random()*2.0*math.pi
+                z_rot = random.random()*2.0*math.pi
+                euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
+                mat = pyrr.matrix33.create_from_eulers(euler)
+                trans = torch.from_numpy(mat).float()
+                for _ in range(sz):
+                    img_list = []
+                    trg_list = []
+                    x_scale = random.random()*0.5 + 0.5
+                    y_scale = random.random()*0.5 + 0.5
+                    z_scale = random.random()*0.5 + 0.5
+                    for i in range(isz):
+                        for j in range(isz):
+                            d = math.sqrt(i*i + j*j)
+                            x_rot = 4*math.pi*d*x_scale / (isz/2.)
+                            y_rot = 4*math.pi*d*y_scale / (isz/2.)
+                            z_rot = 4*math.pi*d*z_scale / (isz/2.)
+                            euler = pyrr.euler.create(roll=x_rot, pitch=y_rot, yaw=z_rot)
+                            mat = pyrr.matrix33.create_from_eulers(euler)
+                            img = torch.from_numpy(mat).float()
+                            img_list.append(img)
+                            target = trans @ img
+                            trg_list.append(target)
+
+                    img = torch.stack(img_list)
+                    img = img.permute(1,2,0).view(9,isz,isz)
+                    self.train_data.append(img)
+                    target = torch.stack(trg_list)
+                    target = target.permute(1,2,0).view(9,isz,isz)
+                    self.train_labels.append(target)
+                    pbar.update()
+
             elif img_type=='three_point':
                 scale = width/10.0
                 A = np.array([-1,-2])
@@ -624,7 +771,7 @@ class myTest(data.Dataset):
         if self.target_transform is not None:
             target = self.target_transform(target)
         """
-        return index, img, target
+        return img, target
 
 
 """

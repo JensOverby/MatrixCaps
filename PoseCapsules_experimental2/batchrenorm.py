@@ -52,13 +52,15 @@ def r_d_max_func(itr):
 
 class BatchRenorm(nn.Module):
     __constants__ = ['eps','momentum', 'update_interval', 'noise']
-    def __init__(self, num_features, update_interval, eps=1e-5, momentum=0.1, noise=0.3):
+    def __init__(self, num_features, update_interval, eps=1e-5, momentum=0.1, noise=4.):
         super(BatchRenorm, self).__init__()
         self.update_interval = update_interval-1
         self.eps = eps
         self.momentum = momentum
         self.noise = noise
-        #self.register_buffer('itr', torch.zeros(1))
+        self.register_buffer('itr', torch.zeros(1))
+        #self.itr += 1
+        #self.itr *= 5000
         self.register_buffer('running_mean', torch.zeros(num_features))
         self.register_buffer('running_sigma', torch.ones(num_features))
 
@@ -67,8 +69,11 @@ class BatchRenorm(nn.Module):
         shp = [input.shape[1],] + [1,1][:len(input.shape)-2]
         
         if self.training:
+            #self.itr *= 0
+            #self.itr += 1
+            #self.itr *= 5000
             # flatten to (batch*height*width, channels)
-            input_flat = input.transpose(-1, 1).contiguous().view((-1, input.shape[1])) + self.eps
+            input_flat = input.transpose(-1, 1).contiguous().view((-1, input.shape[1])) + self.eps #- 1.5 #* torch.rand(shp[0]).cuda()
     
             # Calculate batch/norm statistics
             # mean_b = input_flat.mean(0).view(shp) - self.noise * torch.rand(shp).cuda()
@@ -78,11 +83,11 @@ class BatchRenorm(nn.Module):
 
             bn = (input - mean_b.view(shp)) / sigma_b.view(shp)
 
-            #r_max, d_max = r_d_max_func(self.itr.item())
-            #r = (sigma_b.detach()/self.running_sigma).clamp(1/r_max, r_max)
-            #d = ((mean_b.detach()-self.running_mean) / self.running_sigma).clamp(-d_max, d_max)
+            r_max, d_max = r_d_max_func(self.itr.item())
+            r = (sigma_b.detach()/self.running_sigma).clamp(1/r_max, r_max)
+            d = ((mean_b.detach()-self.running_mean) / self.running_sigma).clamp(-d_max, d_max)
             
-            #bn = bn * r.view(shp) + d.view(shp)
+            bn = bn * r.view(shp) + d.view(shp)
             
             #bn += 0.3*torch.rand_like(bn).cuda() - 0.05
             #bn -= 0.3*torch.rand(shp).cuda()
@@ -92,7 +97,7 @@ class BatchRenorm(nn.Module):
             if iteration == self.update_interval: #self.n == self.update_interval:
                 #self.n *= 0
                 #self.steps += 1
-                #self.itr += 1
+                self.itr += 1
                 self.running_mean += self.momentum * (mean_b.detach() - self.running_mean)
                 self.running_sigma += self.momentum * (sigma_b.detach() - self.running_sigma)
         else:

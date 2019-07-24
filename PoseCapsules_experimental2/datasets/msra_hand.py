@@ -6,12 +6,12 @@ from torch.utils.data import Dataset
 from PIL import Image
 #from .v2v_util import V2VVoxelization
 
-import torchvision.transforms.functional as TF
+#import torchvision.transforms.functional as TF
 import math
 import collections
 import torch
 #from torchsample.transforms import *
-from scipy.misc import imrotate
+#from scipy.misc import imrotate
 import matplotlib.pyplot as plt
 import mpl_toolkits.mplot3d as m3d
 
@@ -199,7 +199,7 @@ def image_resize_with_crop_or_pad(dm, shape):
 def data_aug(dm, pose, cfg, com):
     # random rotation
     jnt_num = pose.shape[0]
-    angle = np.random.rand(1)*2.-1
+    angle = np.random.rand(1)*0.5 - 0.25 #*2.-1
     rot_dm = np.array(Image.fromarray(dm).rotate(-180.*angle))
     angle *= math.pi
 
@@ -211,7 +211,7 @@ def data_aug(dm, pose, cfg, com):
 
     #uvd_pt = np.reshape(uvd_pt, (-1,3))
     rot_pose = np.reshape(np.matmul(uvd_pt, rot_mat), (-1,))
-   
+    """
     # random elongate x,y edge
     edge_ratio = np.clip(np.random.randn(2)*0.2+1.0, 0.9, 1.1)
     target_height = (dm.shape[0]*edge_ratio[0]).astype(int)  #target_height = tf.to_int32(tf.to_float(tf.shape(dm)[0])*edge_ratio[0])
@@ -221,7 +221,7 @@ def data_aug(dm, pose, cfg, com):
 
     rot_dm = image_resize_with_crop_or_pad(rot_dm, dm.shape)  #rot_dm = tf.image.resize_image_with_crop_or_pad(rot_dm, tf.shape(dm)[0], tf.shape(dm)[1])
     rot_pose = rot_pose * np.tile([edge_ratio[1],edge_ratio[0],1.0], [jnt_num])
-
+    """
     rot_pose = rot_pose + np.tile(uv_com, [jnt_num])
     rot_pose = uvd2xyz_op(rot_pose, cfg)
     rot_pose = np.reshape(rot_pose, pose.shape)
@@ -241,14 +241,16 @@ def world2pixel(x, y, z, img_width, img_height, fx, fy):
     p_y = img_height / 2 - y * fy / z
     return p_x, p_y
 
-
-def depthmap2points(image, fx, fy):
-    h, w = image.shape
-    x, y = np.meshgrid(np.arange(w) + 1, np.arange(h) + 1)
-    points = np.zeros((h, w, 3), dtype=np.float32)
-    points[:,:,0], points[:,:,1], points[:,:,2] = pixel2world(x, y, image, w, h, fx, fy)
+def depthmap2points(depthmap, cfg):
+    h, w = depthmap.shape
+    x, y = np.meshgrid(np.arange(w) + 1, h - np.arange(h))
+    points = np.stack([x.astype(float), y.astype(float), depthmap], axis=-1)
+    points = uvd2xyz_op(points, cfg).reshape(h,w,-1)
     return points
 
+    #points = np.zeros((h, w, 3), dtype=np.float32)
+    #points[:,:,0], points[:,:,1], points[:,:,2] = pixel2world(x, y, image, w, h, fx, fy)
+    #return points
 
 def points2pixels(points, img_width, img_height, fx, fy):
     pixels = np.zeros((points.shape[0], 2))
@@ -278,6 +280,27 @@ def load_depthmap(filename, img_width, img_height, max_depth):
         """
 
         return depth_image
+
+
+def show_Data(depthmap, joints, cfg, max_depth):
+
+    points = depthmap2points(depthmap, cfg)
+    points = points.reshape((-1, 3))
+
+    j = 0
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.gca(projection='3d')
+    for i in range(points.shape[0]):
+        xs, ys, zs = points[i,:]
+        if zs != max_depth:
+            if (j % 10) == 0:
+                ax.scatter(xs, ys, zs, c='r', marker='o')
+            j += 1
+    for i in range(joints.shape[0]):
+        xs, ys, zs = joints[i,:]
+        ax.scatter(xs, ys, zs, c='b', marker='o')
+    #plt.savefig('fig_{}.png'.format(i), dpi=400, bbox_inches='tight')
+    plt.show()
 
 
 class MARAHandDataset(Dataset):
@@ -466,14 +489,18 @@ class MARAHandDataset(Dataset):
         pose_orig = self.joints_world[index]
 
         depthmap, pose, cropped_cfg = crop_from_xyz_pose(depthmap_orig, pose_orig, self.cfg, out_w=128, out_h=128, pad=20.0, max_depth=self.max_depth)
+        #show_Data(depthmap, pose, cropped_cfg, self.max_depth)
 
-        
+        """
         if self.training:
             com = center_of_mass(depthmap, cropped_cfg)
             inv_depthmap = -depthmap + self.max_depth
             aug_dms, pose = data_aug(inv_depthmap, pose, cropped_cfg, com)
             depthmap = -aug_dms + self.max_depth
-        
+        """
+
+        #show_Data(depthmap, pose, cropped_cfg, self.max_depth)
+
 
         xyzlocal_pose = xyz2xyz_local(pose, cropped_cfg)
 
@@ -543,6 +570,19 @@ class MARAHandDataset(Dataset):
 
         depthmap /= self.max_depth
         depthmap = 1 - depthmap
+
+
+        if self.training:
+            """ Add Gaussian Noise """
+            #depthmap += np.random.randn(*depthmap.shape)*0.022
+            #depthmap = np.clip(depthmap, 0., 1.)
+            
+            """ scramble """
+            for _ in range(2):
+                depthmap_ = depthmap.reshape((-1,4))
+                scramble = np.argsort(1.5*np.random.randn(*depthmap_.shape) + np.arange(4))
+                depthmap = np.take_along_axis(depthmap_,scramble,1).reshape(*depthmap.shape)
+                depthmap = depthmap.transpose()
 
         #depthmap = np.concatenate([depthmap, np.zeros((self.img_width-self.img_height, self.img_width), dtype=np.float32)], axis=0)
         

@@ -68,7 +68,7 @@ class StoreLayer(nn.Module):
         #if type(x) is tuple:
         #    x = x[0]
         if self.do_clone:
-            self.container[0] = (x[0].clone(), x[1].clone())
+            self.container[0] = x.clone()
         else:
             self.container[0] = x
         #shp = x.shape
@@ -143,6 +143,33 @@ class ConcatLayer(nn.Module):
 
         return y
 
+class AddLayer(nn.Module):
+    def __init__(self, container, do_clone=True, keep_original=False):
+        super(AddLayer, self).__init__()
+        self.container = container
+        self.do_clone = do_clone
+        self.keep_original = keep_original
+        
+    def forward(self, x):
+        if type(x) is tuple:
+            x0 = x[0]
+        else:
+            x0 = x
+        if type(self.container[0]) is tuple:
+            y0 = self.container[0][0]
+        else:
+            y0 = self.container[0]
+
+        y = y0 + x0
+        
+        if not self.keep_original:
+            if self.do_clone:
+                self.container[0] = y.clone()
+            else:
+                self.container[0] = y
+
+        return y
+
 class ActivatePathway(nn.Module):
     def __init__(self, container):
         super(ActivatePathway, self).__init__()
@@ -171,6 +198,40 @@ class BNLayer(nn.Module):
         xx = torch.tanh(xx)
         yy = torch.sigmoid(x[1])
         #x = torch.cat([xx,yy], dim=3)
+        return xx, yy
+
+class BNLayer2(nn.Module):
+    def __init__(self, func='BatchNorm2d'):
+        super(BNLayer2, self).__init__()
+        self.func = func
+        self.not_initialized = True
+        #self.hardtanh = nn.Hardtanh(inplace=True)
+
+    def forward(self, x):
+        shp = x[0].shape
+        xx = x[0].view((shp[0]*shp[1], shp[2]*shp[3]) + shp[4:])
+        #yy = x[1]
+        if self.not_initialized:
+            BatchNormFunc = getattr(nn,self.func)
+            self.batchnorm = BatchNormFunc(num_features=xx.shape[1])
+            if xx.is_cuda:
+                self.batchnorm.cuda()
+            self.not_initialized = False
+        xx = self.batchnorm(xx).view(shp[:3] + (shp[3],) + shp[4:])
+        #xx = self.hardtanh(x[0])
+        xx = torch.tanh(xx)
+        yy = x[1].contiguous()
+        #x = torch.cat([xx,yy], dim=3)
+        return xx, yy
+
+class HTanLayer(nn.Module):
+    def __init__(self, func='BatchNorm2d'):
+        super(HTanLayer, self).__init__()
+        self.hardtanh = nn.Hardtanh(inplace=True)
+
+    def forward(self, x):
+        xx = self.hardtanh(x[0])
+        yy = x[1].contiguous()
         return xx, yy
 
 class CatLayer(nn.Module):

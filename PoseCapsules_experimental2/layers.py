@@ -212,6 +212,24 @@ class ConvVector2d(nn.Module):
         votes = x.view(shp[0], -1, self.output_dim, self.h, x.size(-2), x.size(-1)) # batch_size, input_dim, output_dim, h, out_dim_x, out_dim_y
         return votes
 
+"""
+def getNormal(sz): 
+    y = [] 
+    for i in range(sz): 
+        b=i*4/sz - 2 
+        f=(i+1)*4/sz - 2 
+        y.append(norm.cdf(f)-norm.cdf(b)) 
+    normal = np.stack(y) 
+    b=int((sz-1)/2) 
+    f=int(sz/2) 
+    remain = (1 - normal.sum())/(f-b+1) 
+    for i in range(f-b+1): 
+        normal[b+i] += remain 
+    rows = normal.reshape(-1,1) 
+    cols = normal.reshape(1,-1) 
+    kernel = rows*cols 
+    return kernel
+"""
 
 class PrimMatrix2d(nn.Module):
     def __init__(self, output_dim, h, kernel_size, stride, padding, bias, advanced=False, func='Conv2d', pool=False):
@@ -252,6 +270,8 @@ class PrimMatrix2d(nn.Module):
             if self.bias:
                 nn.init.normal_(self.conv_pre.bias.data, mean=0,std=0.1)
             in_channels *= 2
+            
+            #self.hardtanh = nn.Hardtanh(inplace=True)
         
         self.conv = ConvFunc(in_channels=in_channels*in_h,
                                        out_channels=self.output_dim * self.h,
@@ -267,7 +287,7 @@ class PrimMatrix2d(nn.Module):
             nn.init.normal_(self.conv.bias.data, mean=0,std=0.1)
 
         if self.pool:
-            self.conv_a = torch.nn.AvgPool2d(kernel_size=self.kernel_size, stride=self.stride, padding=self.padding)
+            self.conv_a = torch.nn.MaxPool2d(kernel_size=self.kernel_size, stride=self.stride, padding=self.padding)
         else:
             self.conv_a = ConvFunc(in_channels=1,
                                            out_channels=1,
@@ -309,6 +329,7 @@ class PrimMatrix2d(nn.Module):
         if self.advanced:
             votes = self.pad_pre(x)
             votes = self.conv_pre(votes)
+            #votes = self.hardtanh(votes)
             votes = F.relu(votes, inplace=True)
             votes = torch.cat([x, votes], dim=1)
             votes = self.conv(votes)                                        # batch_size*input_dim, output_dim*h, out_dim_x, out_dim_y
@@ -489,9 +510,11 @@ class VectorRouting(nn.Module):
 
 class SparseCoding(nn.Module):
 
-    def __init__(self, num_features, type='lifetime', ema_decay=0.95, target_min_boost=0.96, target_max_boost=4., 
-                 down_boost_factor=0.05, up_boost_factor=0.05, boost_update_count=1000, sparsity=60/100, return_mask=False, active=True):
+    def __init__(self, num_features, k=1, type='lifetime', ema_decay=0.95, target_min_boost=0.96, target_max_boost=4., 
+                 down_boost_factor=0.05, up_boost_factor=0.05, boost_update_count=30000, sparsity=80/100, return_mask=False, active=True):
         super(SparseCoding, self).__init__()
+        self.k = k
+        self.masked_freq = False
         self.lifetime = type=='lifetime'
         self.ema_decay=ema_decay
         self.target_min_freq=target_min_boost # Is downscaled in initialization
@@ -499,7 +522,7 @@ class SparseCoding(nn.Module):
         self.down_boost_factor=down_boost_factor
         self.up_boost_factor=up_boost_factor
         self.boost_update_count = boost_update_count
-        self.N = 0
+        self.N = boost_update_count - 2
         self.register_buffer('boosting_weights', torch.ones(num_features))
         self.register_buffer('freq_ema', torch.zeros(num_features))
         self.register_buffer('ramp_in', torch.tensor([1.]))
@@ -507,6 +530,9 @@ class SparseCoding(nn.Module):
         self.return_mask = return_mask
         self.active = active
         self.not_initialized = True
+
+        self.steepness_factor=6
+        self.clip_threshold=0.02
 
     """
     batch, dim, dim, input_dim (prim_capsules), output_dim
@@ -568,15 +594,19 @@ class SparseCoding(nn.Module):
 
         if self.lifetime:
             """ Rank routing coefficients """
-            capsule_routing = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
-            order = capsule_routing.sort(1, descending=True)[1]
+            capsule_routing_sum = capsule_routing.sum(dim=-1) # batch-size*input_dim, output_dim
+            order = capsule_routing_sum.sort(1, descending=True)[1]
             ranks = (-order).sort(1, descending=True)[1]
         
             #if self.training:
             """ Winning frequency """
             #transposed_ranks = ranks.transpose(1,0)  # output_dim, batch_size*input_dim
-            win_counts = (ranks == 0).sum(dim=0) #(transposed_ranks == 0).sum(dim=1) # output_dim
-            freq = win_counts.float() / ranks.shape[0] # output_dim
+            if self.masked_freq:
+                masked_routing = ((ranks < self.k).float() * capsule_routing_sum).sum(dim=0)
+                freq = masked_routing / masked_routing.sum()
+            else:
+                win_counts = (ranks < self.k).sum(dim=0)
+                freq = win_counts.float() / (self.k*ranks.shape[0]) # output_dim
         else:
             #order = capsule_routing.sort(1, descending=False)[1]
             #score = order.sort(1, descending=False)[1]
@@ -598,12 +628,12 @@ class SparseCoding(nn.Module):
     
         """ Moving average """
         if self.not_initialized:
-            batch = capsule_routing.shape[0]
-            features = capsule_routing.shape[1]
+            batch = capsule_routing_sum.shape[0]
+            features = capsule_routing_sum.shape[1]
             self.freq_ema = freq
             self.target_max_freq /= features
             self.target_min_freq /= features
-            self.boost_update_count = int(self.boost_update_count / batch)
+            #self.boost_update_count = int(self.boost_update_count / batch)
             self.ema_decay = self.ema_decay ** (1/self.boost_update_count)
             self.not_initialized = False
 
@@ -613,6 +643,7 @@ class SparseCoding(nn.Module):
         #    print()
 
         self.N += 1
+
         if self.N == self.boost_update_count:
             self.N = 0
 
@@ -628,6 +659,12 @@ class SparseCoding(nn.Module):
                 error_normalized = (-self.freq_ema + self.target_min_freq) #/ self.target_min_freq
                 error_normalized = (error_normalized > 0).float() * error_normalized
                 correction += error_normalized * self.up_boost_factor
+                
+                # DECAY
+                error_normalized = (-self.freq_ema + self.target_max_freq)
+                error_normalized = (error_normalized > 0).float() * error_normalized
+                correction += error_normalized * self.up_boost_factor/10.
+                nodecay = ((correction > 0) * (correction <= (error_normalized*self.up_boost_factor/10.))) != 1
                 
                 mean_compensation = 1. / ((self.boosting_weights < 1).float()*self.boosting_weights).mean().clamp(min=0.2)
                 
@@ -661,26 +698,38 @@ class SparseCoding(nn.Module):
 
             print ()
             print ()
-            #print ('freq     :', *['%.2f' % i for i in freq.tolist()])
-            print ('freq_avg :', *['%.2f' % i for i in self.freq_ema.tolist()])
+            print ('freq_avg :', *[('%.2f' % i).lstrip('01').lstrip('.') for i in self.freq_ema.tolist()])
             if self.active:
-                print ('boost    :', *['%.2f' % i for i in self.boosting_weights.tolist()])
+                print ('boost    :', *[('%.2f' % i).lstrip('01').lstrip('.') for i in self.boosting_weights.tolist()])
                 change = self.boosting_weights - old
+                change = nodecay.float() * change
                 change = (change==0).float() + change
-                s = str(['%.2f' % i for i in change.tolist()])
-                s = s.replace("["," ").replace("'","").replace("]","").replace(",","").replace(" 0","+0").replace(" -","-").replace("0.00","    ").replace("1.00","    ")
-                print ('change   ', s)
+                #s = str(['%.2f' % i for i in change.tolist()])
+                #s = s.replace("["," ").replace("'","").replace("]","").replace(",","").replace(" 0","+").replace(" -0","-").replace(".00","    ") #.replace("1.00","    ")
+                print ('change   :', *[('%.2f' % i).replace('-0.0','-').replace('0.0','+').replace('1.00','  ').replace('0',' ') for i in change.tolist()])
                 #print ('Weights changed     :', (self.boosting_weights != old).sum().item())
-                print ('Active filters (>5%):', (self.freq_ema > 0.05/shp[1]).sum().item())
+                print ('Active filters (>5%) :', (self.freq_ema > 0.05/shp[1]).sum().item())
 
 
-        if not self.return_mask:
-            return 1.
+        #if not self.return_mask:
+        #    return 1.
 
+        #normalised_ranks = (ranks.shape[1]-1 - ranks).float() / (ranks.shape[1] - 1) # batch_size*input_dim, output_dim
+        #routing_mask = torch.sigmoid(6.*(normalised_ranks - 0.5))
+        #routing_mask = torch.exp(-self.steepness_factor * normalised_ranks) # batch_size*input_dim, output_dim
+        #routing_mask = routing_mask - ( routing_mask * (routing_mask < self.clip_threshold).float() )
+        #routing_mask = routing_mask.unsqueeze(-1).expand(shp)
+        
+        """
+        updated_routing = mask.float() * capsule_routing
+        mu = updated_routing.sum(dim=(1,2)) / mask.sum(dim=(1,2)).float()
+        mu = (mu - 0.5) / 2. + 0.5
+        return (updated_routing > mu.view(-1,1,1)).float()
         
         routing_mask = (ranks < self.sparsity*ranks.shape[1]).float()
-        routing_mask = routing_mask.unsqueeze(-1).expand(shp) #.view(shp[0:-2] + (1,1,1))
+        routing_mask = routing_mask.unsqueeze(-1).expand(shp) * activated_features_mask
         return routing_mask
+        """
         
         
 class MatrixRouting(nn.Module):
@@ -692,10 +741,12 @@ class MatrixRouting(nn.Module):
         self.sparse = sparse
         self.batchnorm = batchnorm
         self.sigmoid = nn.Sigmoid()
-
+        #self.hardtanh = nn.Hardtanh(min_val=0,max_val=1)
         #if isinstance(activation, batchrenorm.Sigmoid):
-        self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
-        #else:
+        if sparse is None:
+            self.beta_a = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1))
+        #self.beta_aa = nn.Parameter(torch.randn(self.output_dim).view(1,self.output_dim,1,1))
+        #else:0
         #    self.beta_a = 0
         
         #self.experimental = experimental
@@ -730,7 +781,7 @@ class MatrixRouting(nn.Module):
             R = Variable(torch.ones(shp[:3]), requires_grad=False) / self.output_dim
 
         for i in range(self.num_routing):
-            lambda_ = 1 - 0.95 ** (i+1)
+            lambda_ = (1 - 0.65 ** (i+1)) * 1.37
             #lambda_ = 0.01 * (1 - 0.95 ** (i+1))
             #lambda_ = 1. * (1 - 0.5 ** (i+1))
             
@@ -750,34 +801,33 @@ class MatrixRouting(nn.Module):
             Votes are routed by the learned weight self.W.
             """
             log_sigma = torch.log(sigma_square.sqrt()+eps)
-            cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h)) * sum_R.view(b, self.output_dim,-1,1)
-            is_last_time = (i == (self.num_routing - 1))
 
             if self.sparse is None:
+                cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h)) * sum_R.view(b, self.output_dim,-1,1)
                 a = self.sigmoid(lambda_*(self.beta_a - cost.sum(-1)))
             else:
-                a = self.batchnorm(self.beta_a - cost.sum(-1), i)
+                is_last_time = (i == (self.num_routing - 1))
+                #cost = (self.beta_v + self.beta_aa*log_sigma.view(b,self.output_dim,-1,h)) * sum_R.view(b, self.output_dim,-1,1)
+                cost = (self.beta_v + log_sigma.view(b,self.output_dim,-1,h)) * sum_R.view(b, self.output_dim,-1,1)
+                #a = self.batchnorm(self.beta_a - cost.sum(-1), i)
+                a = self.batchnorm(-cost.sum(-1), i)
+                #inp = lambda_*a*0.25 + 0.5
+                #a = (inp.clamp(0.001,0.999) + inp*0.0001).clamp(0,1)
+                
                 a = self.sigmoid(lambda_*a)
-                a_boost = self.sparse.boosting_weights.view(1,-1,1) * a.data
-                a = a - (a_boost < 0.5).float() * a
+                #a = (self.hardtanh(lambda_*a) + lambda_*a * 0.001 + 0.01).# *0.25+0.25)
+                #a = ((lambda_*a).clamp(0.001, 0.999) + lambda_*a * 0.0001).clamp(0.,1.)
+                #a = torch.sigmoid((lambda_*a - 0.5)/0.17)
+                a = self.sparse.boosting_weights.view(1,-1,1) * a
+                #a_boost = self.sparse.boosting_weights.view(1,-1,1) * a.data
+                #a = a - (a_boost < 0.495).float() * a
 
                 if is_last_time:
-                    if self.stat is not None:
-                        self.stat.append( log_sigma.std().item() )
-                        cost_sum = cost.sum(-1)
-                        self.stat.append( cost_sum.mean().item() )
-                        self.stat.append( cost_sum.std().item() )
-                        
-                        mask_a = a>0
-                        numel_a = mask_a.sum()
-                        if numel_a.item() > 0:
-                            mean_a = a.sum()/numel_a
-                            sigma_a = mask_a.float() * (a - mean_a) ** 2
-                            sigma_a = (sigma_a.sum()/numel_a).sqrt()
-                        else:
-                            sigma_a = numel_a.float()
-                        
-                        self.stat.append( sigma_a.item() )
+                    #mask = a.data > a.data.mean(dim=2, keepdim=True).clamp(min=0.495)
+                    #a = mask.float() * a
+                    #b = b * 0.00002 + 0.01
+                    #a = torch.max(a, b)
+                    
                     if self.training:
                         self.sparse.update(a) #sum_R.view(b, self.output_dim,-1)) * a
                         #if self.L_fac.item() < 0:
@@ -786,13 +836,40 @@ class MatrixRouting(nn.Module):
                         if self.sparse.N == 0:
                             bt99 = (a > 0.99).sum()
                             bt8 = (a > 0.8).sum() - bt99
-                            mid = (a > 0.2).sum() - bt8 - bt99
-                            lt2 = (a > 0.01).sum() - bt8 - mid - bt99
+                            bt5 = (a > 0.5).sum() - bt8 - bt99
+                            bt2 = (a > 0.2).sum() - bt5 - bt8 - bt99
+                            lt2 = (a > 0.01).sum() - bt2 - bt5 - bt8 - bt99
                             eq0 = (a == 0.).sum()
                             lt01 = (a < 0.01).sum() - eq0
-                            print('Activation distribu :', eq0.item(), '|0|', lt01.item(), '|0.01|', lt2.item(), '|0.2|', mid.item(), '|0.8|', bt8.item(), '|0.99|', bt99.item())
+                            print('Activity distribution:', eq0.item(), '|0|', lt01.item(), '|0.01|', lt2.item(), '|0.2|', bt2.item(), '|0.5|', bt5.item(), '|0.8|', bt8.item(), '|0.99|', bt99.item())
                             #if self.experimental==1:
                             #    print('Lfac =', self.L_fac.mean().item())
+                    if self.stat is not None:
+                        self.stat.append( log_sigma.std().item() )
+                        cost_sum = cost.sum(-1)
+                        self.stat.append( cost_sum.mean().item() )
+                        self.stat.append( cost_sum.std().item() )
+                        
+                        mask_a = a>0.01
+                        
+                        numel_a = mask_a.sum(dim=2).float()+eps
+                        mean_a = a.sum(dim=2)/numel_a
+                        sigma_a = mask_a.float()*(a - mean_a.unsqueeze(-1)) ** 2
+                        sigma_a = (sigma_a.sum(dim=2)/numel_a).sqrt()
+                        sigma_a = sigma_a.mean()
+                        
+                        """
+                        numel_a = mask_a.sum()
+                        if numel_a.item() > 0:
+                            mean_a = a.sum()/numel_a
+                            sigma_a = mask_a.float() * (a - mean_a) ** 2
+                            sigma_a = (sigma_a.sum()/numel_a).sqrt()
+                        else:
+                            sigma_a = numel_a.float()
+                        """
+                        
+                        self.stat.append( sigma_a.item() )
+
             
             """ E-step: Recompute the assignment probabilities R(ij) based on the new Gaussian model and the new a(j) """
             if i != self.num_routing - 1:
